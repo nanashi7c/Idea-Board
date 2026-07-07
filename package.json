@@ -1,0 +1,8 @@
+{
+  "name": "idea-board",
+  "private": true,
+  "_comment_script": "Notionの設計ドキュメントのローカルへの同期",
+  "scripts": {
+    "docs:sync": "node scripts/tmp/sync-notion-docs.mjs"
+  }
+}
