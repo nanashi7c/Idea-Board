@@ -1,0 +1,15 @@
+{
+  // ルート直下の共通コンパイラオプション（strict、target: ES2022、module: ESNext など）を全て継承する
+  "extends": "../../tsconfig.base.json",
+  // コンパイル後の JS 出力先ディレクトリ（apps/api/dist）
+  "compilerOptions": {
+    // コンパイル後の JS 出力先ディレクトリ（apps/api/dist）
+    "outDir": "dist",
+    // コンパイル対象の入力ルート。src 配下のディレクトリ構造を保ったまま outDir に出力される
+    "rootDir": "src",
+    // グローバルに読み込む型定義パッケージを @types/node のみに限定（process、Buffer などの Node.js 組み込み型が使えるようになる）
+    "types": ["node"]
+  },
+  // 型チェック・コンパイル対象を src ディレクトリ配下のみに限定
+  "include": ["src", "esbuild.config.mjs"]
+}
