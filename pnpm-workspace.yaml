@@ -1,0 +1,7 @@
+packages:
+  - "apps/*" # apps/ 直下の各ディレクトリをワークスペースパッケージとして扱う
+  - "packages/*" # packages/ 直下の各ディレクトリをワークスペースパッケージとして扱う
+allowBuilds:
+  esbuild: true
+  sharp: true
+  unrs-resolver: true

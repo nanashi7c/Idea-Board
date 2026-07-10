@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    // 厳格な型チェック一式（strictNullChecks 等）を有効化
+    "strict": true,
+    // 配列・オブジェクトの添字アクセス結果に自動で | undefined を付与し、存在チェック漏れを防ぐ
+    "noUncheckedIndexedAccess": true,
+    // 出力する JS の言語バージョン
+    "target": "ES2022",
+    // 出力モジュール形式（ESM）
+    "module": "ESNext",
+    // Vite/esbuild 等バンドラー向けの解決方式（TS 5.0+）
+    "moduleResolution": "bundler",
+    // CommonJS ↔ ESM の import 互換性を確保
+    "esModuleInterop": true,
+    // .d.ts の型チェックを省略しビルドを高速化
+    "skipLibCheck": true,
+    // ファイル名の大文字小文字の不一致を検出（Win/Mac ↔ Linux の差異防止）
+    "forceConsistentCasingInFileNames": true,
+    // JSON ファイルを import 可能にする
+    "resolveJsonModule": true,
+    // 各ファイルを単独でトランスパイル可能な書き方に制限（esbuild/SWC 等の単一ファイルコンパイラ対応）
+    "isolatedModules": true
+  }
+}
