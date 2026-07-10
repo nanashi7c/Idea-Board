@@ -1,0 +1,31 @@
+# Docker Composeのトップレベルキー。
+services:
+  # サービス名。docker compose上でこのサービスを参照する際の識別子になる
+  db:
+    # 使用イメージの指定。
+    image: postgres:18
+    # ホスト⇔コンテナのポート転送設定一覧
+    ports:
+      # ホストの5432番ポートをコンテナの5432番ポート（PostgreSQLの規定ポート）へ転送する
+      - "5432:5432"
+    # コンテナ起動時に渡す環境変数の一覧
+    environment:
+      # PostgreSQL接続用のユーザ名、パスワード、初回起動時に自動作成されるDB名を指定する
+      POSTGRES_USER: ideaboard
+      POSTGRES_PASSWORD: ideaboard_password
+      POSTGRES_DB: ideaboard_DB
+    # コンテナにマウントするボリュームの一覧
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    # コンテナの死活監視設定
+    healthcheck:
+      # ヘルスチェックの実行コマンド。pg_isreadyでPostgreSQLへの接続可否を確認する。
+      test: ["CMD-SHELL", "pg_isready -U ideaboard"]
+      # ヘルスチェックの実行間隔。
+      interval: 10s
+      # 接続リトライ回数。
+      retries: 10
+# 名前付きボリュームを宣言するトップレベルキー
+volumes:
+  # 名前付きボリューム（Docker規程ドライバ・保存先を指定）
+  db_data:
