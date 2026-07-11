@@ -1,4 +1,6 @@
 {
+  // ルート直下の共通コンパイラオプション（strict、target: ES2022、module: ESNext など）を全て継承する
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
