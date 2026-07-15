@@ -10,18 +10,8 @@ import type {
   RefObject,
   SetStateAction,
 } from "react";
-// packages/sharedで定義したTypeScript型をそのままフロントでも使う。
-// Card: カード1枚分の型(note/image/swatch/column/drawのunion型)
 import type { Card } from "shared";
-// カード一覧の初期値・localStorage永続化ロジック。Konva版(canvas.tsx)と
-// 同じボードデータを共有できるよう、レンダラーに依存しない部分はboard-storage.tsに切り出している。
-// collectDescendantIds/moveCardTo/insertCardAtPointはKonva版のためにboard-storage.tsへ
-// 切り出した純粋なデータ操作で、DOM版でもそのまま再利用できる。
-// 一方、layoutColumnChildren/getCardWorldPosition/findDropTargetColumn(board-storage.ts)は
-// Column内の子カードの位置をKonva側で「自前計算」するためのものだが、DOM版は子カードを
-// CSS flexboxの通常フロー要素として描画しているためブラウザが位置計算を肩代わりしてくれる。
-// そのため、ドロップ先のColumn判定はこのファイル内でgetBoundingClientRect()を使った
-// 別実装(findDropTargetColumnAtClientPoint)にしている(詳細は同関数のコメント参照)。
+// レイアウト計算等Konvaに依存しないデータ操作はcanvas.tsxと共有できるようboard-storage.tsに切り出している。ただし、Column内の子カード位置はDOM版ではCSS flexboxの通常フロー要素として描画しブラウザに計算を任せているため、ドロップ先のColumn判定はこのファイル内でgetBoundingClientRect()を使った別実装(findDropTargetColumnAtClientPoint)にしている。
 import {
   STORAGE_KEY,
   createNoteCard,
@@ -48,7 +38,6 @@ import {
 } from "./board-storage";
 import { Sidebar, CARD_TYPE_DRAG_MIME } from "./toolbar";
 
-// 1回のホイール操作あたりの拡大/縮小率。Konva版と同じ値。
 const ZOOM_STEP = 1.05;
 
 type NoteCard = Extract<Card, { type: "note" }>;
@@ -56,11 +45,7 @@ type SwatchCardType = Extract<Card, { type: "swatch" }>;
 type ImageCardType = Extract<Card, { type: "image" }>;
 type DrawCardType = Extract<Card, { type: "draw" }>;
 
-// Note/Columnはコンテンツ量に応じて高さが変わる（Noteはテキストの表示行数、Columnは
-// 中のカード数）。固定値をstyleに書く代わりに、実際にDOMへレンダリングされた高さを
-// ResizeObserverで測定し、cards配列のheightへ書き戻すためのフック。
-// 「測定→setCards→再描画→再測定」が無限ループにならないよう、直前に測定した高さは
-// refで持ち、変化が無ければsetCardsを呼ばない。
+// Note/Columnはコンテンツ量に応じて高さが変わる。固定値をstyleに書く代わりに、実際にDOMへレンダリングされた高さをResizeObserverで測定し、cards配列のheightへ書き戻す。「測定→setCards→再描画→再測定」が無限ループにならないよう、直前に測定した高さはrefで持ち、変化が無ければsetCardsを呼ばない。
 function useSyncMeasuredHeight(
   ref: RefObject<HTMLElement | null>,
   cardId: string,
@@ -88,12 +73,7 @@ function useSyncMeasuredHeight(
   }, [cardId]);
 }
 
-// Noteカード1枚分の描画。トップレベル（キャンバス上に直接ドラッグ配置されたNote）と、
-// Column内の子カード（縦リストの中の1項目）の両方から呼ばれる。nestedがfalseの間は
-// 絶対配置(left/top=card.x/card.y)、trueの間はColumn側のflexレイアウトに従う
-// 「通常のブロック要素」として並ぶ。どちらの場合もonPointerDownDragは有効で、
-// ネストされたカードも実際に動かせばトップレベルへ昇格する
-// (詳細はSpikeCanvasDom内のhandleCardPointerDown参照)。
+// トップレベル(絶対配置)とColumn内の子カード(flexレイアウトに従う通常のブロック要素)の両方から呼ばれる。ネストされたカードも実際に動かせばトップレベルへ昇格する(詳細はSpikeCanvasDom内のhandleCardPointerDown参照)。
 function NoteCardView({
   card,
   nested,
@@ -116,7 +96,6 @@ function NoteCardView({
   setCards: Dispatch<SetStateAction<Card[]>>;
 }) {
   const elRef = useRef<HTMLDivElement>(null);
-  // 表示行数(折り返し含む)に応じて高さが伸縮するため、実測値をcards配列に同期する。
   useSyncMeasuredHeight(elRef, card.id, card.height, setCards);
 
   return (
@@ -134,8 +113,6 @@ function NoteCardView({
         width: NOTE_WIDTH,
         minHeight: NOTE_MIN_HEIGHT,
         boxSizing: "border-box",
-        // 横長カード内でテキストを縦センタリングするため、1個だけのflexアイテムを
-        // 縦方向中央に配置する。
         display: "flex",
         alignItems: "center",
         background: card.color,
@@ -149,8 +126,6 @@ function NoteCardView({
         <textarea
           autoFocus
           defaultValue={card.text}
-          // 初回マウント時に、既存テキストの行数に合わせて高さを合わせておく
-          // (auto-grow textareaの定番手順: heightをautoに戻してからscrollHeightを読む)。
           ref={(el) => {
             if (!el) return;
             el.style.height = "auto";
@@ -192,7 +167,6 @@ function NoteCardView({
   );
 }
 
-// Swatchカード1枚分の描画。NoteCardViewと同じ絶対配置/フロー配置の切り替えパターン。
 function SwatchCardView({
   card,
   nested,
@@ -234,7 +208,6 @@ function SwatchCardView({
   );
 }
 
-// Imageカード1枚分の描画。SwatchCardViewと同じ絶対配置/フロー配置の切り替えパターン。
 function ImageCardView({
   card,
   nested,
@@ -260,8 +233,7 @@ function ImageCardView({
         height: card.height,
         boxSizing: "border-box",
         borderRadius: 4,
-        // 画像自体をwidth/height 100%で敷き詰めた上でoverflow: hiddenにすることで、
-        // borderRadiusの丸みから画像の角がはみ出さないようにする。
+        // 画像をwidth/height 100%で敷き詰めoverflow: hiddenにすることで、borderRadiusの丸みから画像の角がはみ出さないようにする。
         overflow: "hidden",
         boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
         outline: isSelected ? "2px solid #3b82f6" : "none",
@@ -283,14 +255,7 @@ function ImageCardView({
   );
 }
 
-// Columnカード1枚分の描画。タイトルバー(ドラッグハンドル兼ダブルクリックで編集)と、
-// 縦に並んだ子カードのリスト、末尾の「+ Note」ボタンで構成する。
-// 子カードは絶対配置ではなく通常のブロック要素として並べているため、Column自身の高さは
-// (タイトル＋子カードの合計＋余白)に応じてブラウザが自動計算し、それをuseSyncMeasuredHeightで
-// cards配列に書き戻している。
-// 子カードの実際の描画はrenderChildに委譲する。子がColumn(ネストしたColumn)の場合、
-// renderChildは自分自身(ColumnCardView)を再度返すため、Column in Columnが何段ネストしていても
-// 同じ仕組みで描画できる(呼び出し元はSpikeCanvasDom内のrenderCardDom参照)。
+// 子カードは絶対配置ではなく通常のブロック要素として並べているため、Column自身の高さはブラウザが自動計算し、それをuseSyncMeasuredHeightでcards配列に書き戻している。子がColumn(ネストしたColumn)の場合、renderChildは自分自身(ColumnCardView)を再度返すため、Column in Columnが何段ネストしていても同じ仕組みで描画できる。
 function ColumnCardView({
   card,
   children,
@@ -410,10 +375,7 @@ function ColumnCardView({
   );
 }
 
-// Drawカード1枚分の描画。strokes(カード原点からの相対座標の点列)をそのままSVGの
-// polylineとして描くだけ。カード自体のドラッグ移動は他のカードと同じ
-// handleCardPointerDownの仕組みに乗せているため、strokesの相対座標はそのままで良い
-// (カードのleft/topが動けば、中身のSVGごと一緒に動く)。
+// strokes(カード原点からの相対座標の点列)をそのままSVGのpolylineとして描くだけ。カード自体のドラッグ移動は他のカードと同じhandleCardPointerDownの仕組みに乗せているため、strokesの相対座標はそのままでよい(カードのleft/topが動けば中身ごと動く)。
 function DrawCardView({
   card,
   nested,
@@ -462,16 +424,7 @@ function DrawCardView({
   );
 }
 
-// あるスクリーン座標(clientX/clientY)の点を受け止められるColumnのDOM要素を探す。
-// cardRefsに登録済みの実DOM要素のgetBoundingClientRect()をそのまま使うため、Konva版の
-// findDropTargetColumn(board-storage.ts)のようにレイアウトを自前で再計算する必要が無い
-// (ブラウザがすでに計算した位置・大きさをそのまま信頼できる)。
-// excludeCardIdとその子孫(excludeCardIdがColumnの場合)は候補から除外し、
-// 自己ネスト・循環ネストを防ぐ。複数のColumnの領域が重なる(ネストしたColumnの内側など)
-// 場合は、最も面積が小さい＝最も内側のColumnを優先する。
-// なお、getBoundingClientRect()はドラッグ中に書き換えたstyle.left/topを反映した最新の
-// レイアウトを読むため、直前に他要素のstyleを書き換えているとブラウザが強制的にレイアウトを
-// 再計算する(forced reflow)。カード数が多い場合はコストになりうるが、spikeの規模では未検証。
+// cardRefsに登録済みの実DOM要素のgetBoundingClientRect()をそのまま使うため、Konva版のようにレイアウトを自前で再計算する必要が無い。excludeCardIdとその子孫は候補から除外し、自己ネスト・循環ネストを防ぐ。複数のColumnの領域が重なる場合は、最も面積が小さい＝最も内側のColumnを優先する。
 function findDropTargetColumnAtClientPoint(
   clientX: number,
   clientY: number,
@@ -502,58 +455,29 @@ function findDropTargetColumnAtClientPoint(
   return best?.column ?? null;
 }
 
-// canvas.tsx(Konva版)と同じ機能を、Konvaを使わずdiv + CSS transformだけで実装したもの。
-// KONVA_VS_DOM.mdで比較した「自前実装(DOM)の場合」のコード例を、実際に動く形にしたもの。
-// カードの状態(配列)とキャンバスの見た目(拡大率・位置)をすべてReactのuseStateで持つ設計は
-// canvas.tsxと同じだが、ドラッグ中の座標更新だけはstateを介さずrefのDOM要素を直接書き換える
-// (理由は各ハンドラのコメント、およびKONVA_VS_DOM.md「2. ドラッグ」参照)。
+// canvas.tsx(Konva版)と同じ機能を、Konvaを使わずdiv + CSS transformだけで実装したもの。カードの状態(配列)とキャンバスの見た目(拡大率・位置)をすべてReactのuseStateで持つ設計はcanvas.tsxと同じだが、ドラッグ中の座標更新だけはstateを介さずrefのDOM要素を直接書き換える。
 export function SpikeCanvasDom() {
-  // 背景(パン・ズームの基準)となる、画面いっぱいのコンテナ要素。
   const containerRef = useRef<HTMLDivElement>(null);
-  // パン・ズームのtransformを適用する、カードたちの親要素(Konvaの Stage 相当)。
   const worldRef = useRef<HTMLDivElement>(null);
-  // カードごとの実DOM要素。ドラッグ中にReactのstateを介さず直接styleを書き換えるために保持する。
-  // トップレベルかColumnに何段ネストしているかを問わず、全カードがここに登録される
-  // (ネストしたカードもドラッグで取り出せるようにするため。詳細はrenderCardDom/
-  // handleCardPointerDown参照)。
+  // カードごとの実DOM要素。ドラッグ中にReactのstateを介さず直接styleを書き換えるために保持する。トップレベルかColumnに何段ネストしているかを問わず、全カードがここに登録される(ネストしたカードもドラッグで取り出せるようにするため)。
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
-  // Draw用: 描画中のストロークをライブプレビューするpolyline要素。
   const previewPolylineRef = useRef<SVGPolylineElement>(null);
-  // Draw用: 描画中のストロークの点列(ワールド座標)。pointermoveのたびにここへ追記し、
-  // Reactのstateは介さずpreviewPolylineRefのpoints属性を直接書き換える
-  // (カードドラッグの最適化と同じ理由。commit時に初めてsetCardsする)。
   const previewPointsRef = useRef<{ x: number; y: number }[]>([]);
-  // Draw用: ペンモード中に作成中のDrawカードのid。ペンモードを抜けるまでは
-  // 複数回のドラッグ(ストローク)がすべて同じ1枚のDrawカードに追記される。
   const activeDrawCardIdRef = useRef<string | null>(null);
 
-  // キャンバス全体の拡大率(ズーム)。1が等倍。
   const [scale, setScale] = useState(1);
-  // キャンバス全体の表示位置(パン)。worldRefのtransformに反映する値をstateとして保持する。
   const [stagePos, setStagePos] = useState({ x: 0, y: 0 });
-  // カード一覧そのもの。ここが「ボードの中身」の実体で、Undo・保存・整列など、
-  // 今後追加する機能はすべてこの配列をどう更新するかという話になる。
   // 初期値にloadCards(関数そのもの)を渡しているのは「遅延初期化」というReactの機能で、
-  // 初回レンダリング時に1回だけloadCards()が呼ばれる。もし`useState(loadCards())`と書くと
-  // 再レンダリングのたびにloadCards()が呼ばれてしまうため、関数を渡す書き方が正しい。
+  // 初回レンダリング時に1回だけloadCards()が呼ばれる。`useState(loadCards())`と書くと再レンダリングのたびにloadCards()が呼ばれてしまうため、関数を渡す書き方が正しい。
   const [cards, setCards] = useState<Card[]>(loadCards);
-  // 現在選択中のカードのID(枠線をハイライトするために使う)。何も選んでいなければnull。
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // 現在テキスト編集中のカードのID。Noteならテキスト、Columnならタイトルの編集を表す。
-  // editingIdがセットされている間だけ、該当箇所をdivの代わりに<textarea>/<input>にすり替えて表示する。
   const [editingId, setEditingId] = useState<string | null>(null);
-  // Drawアイコンをオンにしている間(ペンモード)かどうか。trueの間はキャンバス全体が
-  // ドラッグ描画用のオーバーレイに覆われ、パン・カード選択・カードドラッグは無効になる。
   const [isDrawActive, setIsDrawActive] = useState(false);
 
-  // cards配列が変わるたびにlocalStorageへ保存する副作用。
-  // 依存配列に[cards]を指定しているので、cardsが変化した時だけ実行される。
-  // 「保存ボタン」を作らず、状態が変わったら自動で保存する(自動保存)方式にしている。
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
   }, [cards]);
 
-  // キーボードのDelete/Backspaceで選択中のカードを削除、Escapeでペンモードを終了するための副作用。
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && isDrawActive) {
@@ -561,16 +485,11 @@ export function SpikeCanvasDom() {
         activeDrawCardIdRef.current = null;
         return;
       }
-      // テキスト編集中(<textarea>/<input>にフォーカスがある状態)にBackspaceを押すと
-      // 文字を消したいだけなのにカードごと消えてしまうため、編集中は何もしない。
+      // テキスト編集中にBackspaceを押すと、文字を消したいだけなのにカードごと消えてしまうため、編集中は何もしない。
       if (editingId !== null) return;
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
         setCards((prev) => {
-          // Columnを削除する時は、中の子カードも一緒に削除する
-          // (Columnのcards配列上のエントリだけ消すと、子カードがトップレベルの孤児として
-          // 復活して見えてしまうため)。
-          // collectDescendantIdsはColumnの子・孫...と何段ネストしていても再帰的に集めてくれる
-          // (selectedIdがColumnでなければ空集合を返すので、Note等の削除では従来どおり1件だけ消える)。
+          // Columnを削除する時は中の子カードも一緒に削除する(エントリだけ消すと、子カードがトップレベルの孤児として復活して見えてしまうため)。
           const idsToRemove = new Set([
             selectedId,
             ...collectDescendantIds(selectedId, prev),
@@ -591,14 +510,10 @@ export function SpikeCanvasDom() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-    // selectedId/editingId/isDrawActiveはhandleKeyDownの中で参照している値なので、
-    // 依存配列に含める必要がある(含めないと、登録時点の古い値を参照し続けてしまう
-    // ＝いわゆる「クロージャの罠」)。
+    // selectedId/editingId/isDrawActiveはhandleKeyDown内で参照する値なので依存配列に
+    // 含める必要がある(含めないと登録時点の古い値を参照し続けるクロージャの罠になる)。
   }, [selectedId, editingId, isDrawActive]);
 
-  // スクリーン座標(clientX/Y)を、パン・ズームを差し引いたワールド座標に変換する。
-  // Konvaのstage.getRelativePointerPosition()に相当する逆変換を自前で書く必要がある部分
-  // (KONVA_VS_DOM.md「1. 座標変換」参照)。
   const toWorldPos = (clientX: number, clientY: number) => {
     const rect = containerRef.current!.getBoundingClientRect();
     return {
@@ -607,37 +522,25 @@ export function SpikeCanvasDom() {
     };
   };
 
-  // マウスホイールでのズーム処理。マウスカーソルの位置を基準にズームする
-  // (カーソル直下の座標がズーム前後で画面上の同じ位置に留まるように、拡大率と
-  // 同時にstagePosも再計算する)。
+  // マウスカーソルの位置を基準にズームする(カーソル直下の座標がズーム前後で画面上の同じ位置に留まるように、拡大率と同時にstagePosも再計算する)。
   const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-    // ブラウザ標準のページスクロールが同時に起きないようにする。
-    e.preventDefault();
+    e.preventDefault(); // ブラウザ標準のページスクロールを止める
     const rect = containerRef.current!.getBoundingClientRect();
-    // ポインタ位置(コンテナ基準・拡大率やパンの影響を受けない画面座標)を取得する。
     const pointer = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     const oldScale = scale;
-    // ポインタ位置を、現在の拡大率・パン位置を差し引いた「ワールド座標」に変換する。
     const mousePointTo = {
       x: (pointer.x - stagePos.x) / oldScale,
       y: (pointer.y - stagePos.y) / oldScale,
     };
-    // deltaYが正(下スクロール)なら縮小、負(上スクロール)なら拡大。
     const newScale = e.deltaY > 0 ? oldScale / ZOOM_STEP : oldScale * ZOOM_STEP;
     setScale(newScale);
-    // ワールド座標上の同じ点が、新しい拡大率でも同じ画面座標(pointer)に来るように
-    // stagePosを再計算する。
     setStagePos({
       x: pointer.x - mousePointTo.x * newScale,
       y: pointer.y - mousePointTo.y * newScale,
     });
   };
 
-  // 背景(カード以外の部分)でのpointerdown。パン開始、または(動きが無ければ)選択解除に使う。
-  // e.targetがcurrentTarget(このdiv自身)と一致する時だけ処理するのは、BUG_NOTES.mdで踏んだ
-  // 「子要素からのイベントを親のハンドラが誤って処理してしまう」バグと同種の対策。
-  // Konva版はStage/Groupそれぞれにdraggableを設定してこの区別をライブラリ任せにしているが、
-  // 自前実装では「背景用」「カード用」でpointerdownハンドラ自体を分けることで同じ区別を実現している。
+  // e.targetがcurrentTarget(このdiv自身)と一致する時だけ処理するのは、子要素からのイベントを親のハンドラが誤って処理してしまうのを防ぐガード。Konva版はStage/Groupそれぞれにdraggableを設定してこの区別をライブラリ任せにしているが、自前実装では「背景用」「カード用」でpointerdownハンドラ自体を分けることで同じ区別を実現している。
   const handleBackgroundPointerDown = (
     e: React.PointerEvent<HTMLDivElement>,
   ) => {
@@ -645,9 +548,7 @@ export function SpikeCanvasDom() {
     const startX = e.clientX;
     const startY = e.clientY;
     const origin = stagePos;
-    // クリックなのかドラッグ(パン)なのかを、実際にpointermoveが1回でも起きたかで判定するフラグ。
-    // 背景クリック=選択解除、背景ドラッグ=パン、という2つの操作を
-    // 同じpointerdown起点のハンドラでまとめて扱うために必要。
+    // クリックなのかドラッグ(パン)なのかを、実際にpointermoveが1回でも起きたかで判定する。
     let moved = false;
 
     const onMove = (ev: PointerEvent) => {
@@ -656,9 +557,7 @@ export function SpikeCanvasDom() {
         x: origin.x + (ev.clientX - startX),
         y: origin.y + (ev.clientY - startY),
       };
-      // ドラッグ中はsetStateを呼ばず、worldRefのtransformを直接書き換える。
-      // pointermoveのたびに再レンダリングが走るのを避けるための最適化
-      // (KONVA_VS_DOM.md「2. ドラッグ」参照。Konvaは内部でこれと同等のことを標準機能として行っている)。
+      // ドラッグ中はsetStateを呼ばず、worldRefのtransformを直接書き換える(pointermoveのたびに再レンダリングが走るのを避けるための最適化)。
       if (worldRef.current) {
         worldRef.current.style.transform = `translate(${next.x}px, ${next.y}px) scale(${scale})`;
       }
@@ -667,15 +566,11 @@ export function SpikeCanvasDom() {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       if (moved) {
-        // ドラッグ(パン)として終わった場合だけ、最終位置をstateへ確定する。
-        // ドラッグ中は直接DOM操作のみで済ませ、pointerupの1回だけsetStateする方式
-        // (Konva版のonDragEndと役割は同じ)。
         setStagePos({
           x: origin.x + (ev.clientX - startX),
           y: origin.y + (ev.clientY - startY),
         });
       } else {
-        // 動きが無かった=単純なクリックとみなし、選択解除する。
         setSelectedId(null);
       }
     };
@@ -683,33 +578,26 @@ export function SpikeCanvasDom() {
     window.addEventListener("pointerup", onUp);
   };
 
-  // サイドバーのImageアイコンで選択したファイル、またはドラッグ&ドロップされた画像ファイルを
-  // 読み込み、指定したワールド座標を中心にImageカードとして追加する共通処理。
-  // 読み込み自体はすぐ失効してよいBlob URLで行う(Imageへdrawした直後にrevokeするだけなので、
-  // ページをリロードすると失効する性質は問題にならない)。localStorageに保存するdata URL化は
-  // createImageCard内で、縮小後サイズに対して行う(元画像そのままdata URL化すると
-  // QuotaExceededErrorに繋がりやすいため。詳細はcreateImageCardのコメント参照)。
+  // 読み込み自体はすぐ失効してよいBlob URLで行う(Imageへdrawした直後にrevokeするだけ)。
+  // localStorageに保存するdata URL化はcreateImageCard内で縮小後サイズに対して行う(元画像そのままdata URL化するとQuotaExceededErrorに繋がりやすいため)。
   const addImageCardAt = (file: File, center: { x: number; y: number }) => {
     const objectUrl = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(objectUrl);
-      // createImageCardはIMAGE_MAX_WIDTH/HEIGHTに収まるよう縮小した幅・高さを返すため、
-      // 先に(0, 0)で作ってからその幅・高さを使ってcenterが中心に来るx, yを計算し直す。
+      // createImageCardは縮小後の幅・高さを返すため、先に(0, 0)で作ってからその幅・高さでcenterが中心に来るx, yを計算し直す。
       const placeholder = createImageCard(0, 0, img);
       const newCard = {
         ...placeholder,
         x: center.x - placeholder.width / 2,
         y: center.y - placeholder.height / 2,
       };
-      // centerが既存Columnの領域内なら、トップレベルではなくそのColumnの子として追加する。
       setCards((prev) => insertCardAtPoint(prev, newCard, center));
       setSelectedId(newCard.id);
     };
     img.src = objectUrl;
   };
 
-  // サイドバーのImageアイコンで選択したファイルを、画面中央にImageカードとして追加する。
   const handlePickImageFile = (file: File) => {
     addImageCardAt(
       file,
@@ -717,10 +605,6 @@ export function SpikeCanvasDom() {
     );
   };
 
-  // サイドバーのNote/Columnアイコン、またはOSのファイルをキャンバス上にドラッグ&ドロップ
-  // した時の受け皿。dataTransfer.typesにCARD_TYPE_DRAG_MIME(サイドバー発)か
-  // "Files"(OSのファイルドラッグ)のどちらかが載っている時だけドロップを許可する
-  // (通常のテキストドラッグ等と誤反応しないようにするため)。
   const handleContainerDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     const isCardDrag = e.dataTransfer.types.includes(CARD_TYPE_DRAG_MIME);
     const isFileDrag = e.dataTransfer.types.includes("Files");
@@ -730,12 +614,10 @@ export function SpikeCanvasDom() {
   };
 
   const handleContainerDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    // OSのファイルマネージャ等から画像ファイルが直接ドロップされた場合。
-    // 複数枚まとめてドロップされても完全に重ならないよう、1枚ごとに少しずつ
-    // ドロップ位置をずらして配置する。
     if (e.dataTransfer.files.length > 0) {
       e.preventDefault();
       const pos = toWorldPos(e.clientX, e.clientY);
+      // 複数枚まとめてドロップされても完全に重ならないよう、少しずつずらして配置する。
       Array.from(e.dataTransfer.files)
         .filter((file) => file.type.startsWith("image/"))
         .forEach((file, i) => {
@@ -752,13 +634,10 @@ export function SpikeCanvasDom() {
       cardType === "note"
         ? createNoteCard(pos.x, pos.y)
         : createColumnCard(pos.x, pos.y);
-    // ドロップ位置が既存Columnの領域内なら、トップレベルではなくそのColumnの子として追加する。
     setCards((prev) => insertCardAtPoint(prev, newCard, pos));
     setSelectedId(newCard.id);
   };
 
-  // Drawアイコンのオン/オフ切り替え。オフにする瞬間、作成中だったDrawカードへの
-  // 参照(activeDrawCardIdRef)もリセットする(再度オンにした時は新しい1枚として扱う)。
   const handleToggleDraw = () => {
     setIsDrawActive((prev) => {
       const next = !prev;
@@ -767,9 +646,6 @@ export function SpikeCanvasDom() {
     });
   };
 
-  // Column内の「+ Note」ボタン。新しいNoteをcards配列に追加すると同時に、
-  // そのidを対象Columnのcardsに登録する。子Noteのx, yはColumn側のflexレイアウトが
-  // 面倒を見るため使わない(0のまま)。
   const handleAddNoteToColumn = (columnId: string) => {
     const newNote = createNoteCard();
     setCards((prev) => [
@@ -782,10 +658,6 @@ export function SpikeCanvasDom() {
     ]);
   };
 
-  // ペンモード中、キャンバス全面を覆う透明オーバーレイでのpointerdown。
-  // ここから1本のストロークが始まる。pointermoveのたびにReactのstateは介さず
-  // previewPolylineRefのpoints属性を直接書き換えて描画し(カードドラッグと同じ最適化)、
-  // pointerupで初めてstrokeをDrawカードとしてcards配列にコミットする。
   const handleDrawPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     const start = toWorldPos(e.clientX, e.clientY);
@@ -816,13 +688,8 @@ export function SpikeCanvasDom() {
     );
   };
 
-  // 描き終えたストローク(ワールド座標の点列)を、ペンモード中に作成中のDrawカードへ追記する。
-  // まだ1本もストロークを描いていなければ(activeDrawCardIdRef.current === null)、
-  // この1本目のストロークから新しいDrawカードを作る。
   const commitStroke = (worldPoints: { x: number; y: number }[]) => {
-    // 動きの無いクリックはストロークとして扱わない。firstPointのundefinedチェックは
-    // このガードにより実行時には必ず通過するが、TypeScriptの配列アクセスは
-    // 長さチェックと連動して絞り込まれないため、明示チェックで型エラーを解消する。
+    // firstPointのundefinedチェックは、下のlengthガードにより実行時には必ず通過するが、TypeScriptの配列アクセスは長さチェックと連動して絞り込まれないため明示している。
     const [firstPoint] = worldPoints;
     if (!firstPoint || worldPoints.length < 2) return;
     setCards((prev) => {
@@ -845,13 +712,7 @@ export function SpikeCanvasDom() {
     });
   };
 
-  // カード単体のドラッグ移動。KONVA_VS_DOM.md「2. ドラッグ」で比較した通り、
-  // 素朴にpointermoveのたびにsetCardsを呼ぶと、1秒間に何十回もReactの再レンダリング・
-  // cards.map(...)での全カード分の要素再生成・reconcileが走ってしまう。
-  // それを避けるため、ドラッグ中はcardRefsから取得した実DOM要素のstyle.left/topを直接書き換え、
-  // pointerupで指を離した瞬間に初めてsetCardsでReactのstateへ反映する。
-  // note/swatch/column(タイトルバー)/draw/imageの全カード種別、トップレベル/ネスト問わず
-  // 共通で使う。
+  // 素朴にpointermoveのたびにsetCardsを呼ぶと、1秒間に何十回もReactの再レンダリングが走ってしまう。それを避けるため、ドラッグ中はcardRefsから取得した実DOM要素のstyle.left/topを直接書き換え、pointerupで指を離した瞬間に初めてsetCardsでReactのstateへ反映する。note/swatch/column(タイトルバー)/draw/imageの全カード種別、トップレベル/ネスト問わず共通で使う。
   const handleCardPointerDown = (
     e: React.PointerEvent<HTMLDivElement>,
     card: Card,
@@ -861,21 +722,11 @@ export function SpikeCanvasDom() {
 
     const startX = e.clientX;
     const startY = e.clientY;
-    // ネストされたカードのcard.x/card.yはColumn内では使われない値(0や作成時の位置のまま)の
-    // ため、そのままドラッグのorigin(基準位置)にはできない。実際に動いた瞬間(最初のonMove)に、
-    // その時点の画面上の実位置から逆算したワールド座標でColumnの子から抜けさせ
-    // (下記のpromoted分岐)、以降は元からトップレベルだったカードと同じ扱いで追跡する。
-    // 単純なクリック(pointerdownの直後にpointerupが来て、一度もonMoveが発火しない)場合は
-    // この昇格処理自体が走らないため、クリックしただけで意図せずColumnの外に出ることはない。
+    // ネストされたカードのcard.x/card.yはColumn内では使われない値のため、そのままドラッグのorigin(基準位置)にはできない。実際に動いた瞬間(最初のonMove)に、その時点の画面上の実位置から逆算したワールド座標でColumnの子から抜けさせ(下記のpromoted分岐)、以降は元からトップレベルだったカードと同じ扱いで追跡する。単純なクリックの場合はこの昇格処理自体が走らないため、意図せずColumnの外に出ることはない。
     let origin = { x: card.x, y: card.y };
     let el = cardRefs.current.get(card.id);
     let promoted = !columnChildIds.has(card.id);
-    // 実際に動いたかどうか。動いていなければ「クリックによる選択」だけで終わらせる。
     let moved = false;
-    // ドラッグ中、ポインタの下にある入れ子先候補のColumnのid。dragmoveのたびにReactの
-    // stateを介さず、対象のColumn要素のoutlineを直接書き換えてハイライトする
-    // (Konva版のdropTargetId stateに相当する見た目だが、pointermoveごとのsetStateを
-    // 避けるこのファイルの方針(KONVA_VS_DOM.md「2. ドラッグ」参照)に合わせ、DOM直書きにしている)。
     let highlightedTargetId: string | null = null;
     const clearHighlight = () => {
       if (!highlightedTargetId) return;
@@ -889,10 +740,7 @@ export function SpikeCanvasDom() {
 
     const onMove = (ev: PointerEvent) => {
       if (!promoted) {
-        // 昇格前の実際の画面位置(Columnのflexレイアウトが決めた位置)をワールド座標に変換し、
-        // その位置を保ったままトップレベルのカードとして確定する(視覚的なジャンプを防ぐ)。
-        // setCardsをflushSyncで包んで同期的に完了させないと、直後のcardRefs.current.get(card.id)が
-        // まだColumn内の(まもなくアンマウントされる)DOM要素を指したままになってしまう。
+        // 昇格前の実際の画面位置(Columnのflexレイアウトが決めた位置)をワールド座標に変換し、その位置を保ったままトップレベルのカードとして確定する(視覚的なジャンプを防ぐ)。setCardsをflushSyncで包んで同期的に完了させないと、直後のcardRefs.current.get(card.id)がまだColumn内の(まもなくアンマウントされる)DOM要素を指したままになってしまう。
         const currentEl = cardRefs.current.get(card.id);
         const rect = currentEl?.getBoundingClientRect();
         origin = rect ? toWorldPos(rect.left, rect.top) : origin;
@@ -903,8 +751,6 @@ export function SpikeCanvasDom() {
         promoted = true;
       }
       moved = true;
-      // スクリーン座標の移動量をscaleで割り、ワールド座標系での移動量に変換する。
-      // ズームしている状態だと、画面上の1pxの移動がワールド座標では1px未満/以上になるため。
       const dx = (ev.clientX - startX) / scale;
       const dy = (ev.clientY - startY) / scale;
       if (el) {
@@ -932,8 +778,6 @@ export function SpikeCanvasDom() {
       window.removeEventListener("pointerup", onUp);
       clearHighlight();
       if (moved) {
-        // ドラッグ終了時、動いた先が既存Columnの領域内ならそのColumnの子として
-        // ネストし、そうでなければ動いた先の座標をそのままcards配列に反映する。
         const dx = (ev.clientX - startX) / scale;
         const dy = (ev.clientY - startY) / scale;
         const worldPos = { x: origin.x + dx, y: origin.y + dy };
@@ -957,18 +801,9 @@ export function SpikeCanvasDom() {
     window.addEventListener("pointerup", onUp);
   };
 
-  // あるColumnの中に入っている(＝トップレベルでは描画しない)カードのid一覧。
   const columnChildIds = getColumnChildIds(cards);
 
-  // カード1件分の描画。トップレベル(nested=false、絶対配置)と、Column内の子カード
-  // (nested=true、flexフローに従う通常要素)の両方から呼べる共通関数にすることで、
-  // Note/Swatch/Image/Draw/Columnどの種類のカードも「トップレベルかColumnの中か」
-  // 「Columnの中なら何段ネストしているか」を問わず描画できる。Columnの中でrenderCardDomを
-  // 再帰呼び出しすることで、Column in Columnの無制限ネストに対応している。
-  // nestedの値に関わらずonPointerDownDrag/registerRefは常に有効にしている。ネストされた
-  // カードも実際にドラッグで動かせば、handleCardPointerDown内でトップレベルへ昇格する
-  // (見た目(position: relative/absolute)の切り替えだけがnestedの役割で、ドラッグの可否には
-  // 影響しない)。
+  // トップレベル(nested=false、絶対配置)とColumn内の子カード(nested=true、flexフローに従う通常要素)の両方から呼べる共通関数にすることで、Columnの中でrenderCardDomを再帰呼び出しし、Column in Columnの無制限ネストに対応している。nestedの値に関わらずonPointerDownDrag/registerRefは常に有効にしている(見た目の切り替えだけがnestedの役割で、ドラッグの可否には影響しない)。
   const renderCardDom = (card: Card, nested: boolean): ReactNode => {
     const registerRef = (el: HTMLDivElement | null) => {
       if (el) cardRefs.current.set(card.id, el);
@@ -1077,11 +912,7 @@ export function SpikeCanvasDom() {
         onToggleDraw={handleToggleDraw}
         onPickImageFile={handlePickImageFile}
       />
-      {/* containerRef: Konva版のStageに相当する、画面いっぱいの背景。
-          position: fixed + inset: 0で常にビューポート全体を覆い、overflow: hiddenで
-          ワールド側(worldRef)がこの範囲外にはみ出してもスクロールバーが出ないようにしている。
-          touchAction: "none"は、タッチ操作時にブラウザ標準のスクロール/ピンチズームが
-          自前のパン/ズーム実装と competing しないようにするため。 */}
+      {/* containerRef: Konva版のStageに相当する、画面いっぱいの背景。touchAction: "none"はタッチ操作時にブラウザ標準のスクロール/ピンチズームが自前のパン/ズーム実装と競合しないようにするため。 */}
       <div
         ref={containerRef}
         onWheel={handleWheel}
@@ -1097,10 +928,7 @@ export function SpikeCanvasDom() {
           cursor: isDrawActive ? "crosshair" : undefined,
         }}
       >
-        {/* worldRef: Konva版のLayer/Group群に相当する、パン・ズームのtransformを一括で
-            適用する層。カードは全てこの中に絶対配置(left/top)で置かれ、親のtransformだけで
-            画面上の位置・拡大率が決まる。transformOrigin: "0 0"は、スケール変換の基準点を
-            左上に固定するため(デフォルトの中央基準だと、パン位置の計算が複雑になる)。 */}
+        {/* worldRef: Konva版のLayer/Group群に相当する、パン・ズームのtransformを一括で適用する層。transformOrigin: "0 0"はスケール変換の基準点を左上に固定するため(デフォルトの中央基準だとパン位置の計算が複雑になる)。 */}
         <div
           ref={worldRef}
           style={{
@@ -1111,17 +939,10 @@ export function SpikeCanvasDom() {
             transform: `translate(${stagePos.x}px, ${stagePos.y}px) scale(${scale})`,
           }}
         >
-          {/* cardsを1件ずつ描画する。Columnに属するカード(columnChildIdsに含まれるid)は
-              トップレベルでは描画せず、Column自身の描画の中(renderCardDomの再帰呼び出し)で
-              描画する。 */}
           {cards.map((card) =>
             columnChildIds.has(card.id) ? null : renderCardDom(card, false),
           )}
 
-          {/* ペンモード中、描き途中のストロークをライブプレビューするための要素。
-              ワールド座標系(worldRefの子)にそのまま置くことで、パン・ズームと一緒に
-              動く他のカードと同じ座標系で点列を扱える。cards.mapより後ろに置くことで、
-              既存カードの上に重なって見えるようにしている。 */}
           <svg
             style={{
               position: "absolute",
@@ -1142,10 +963,7 @@ export function SpikeCanvasDom() {
           </svg>
         </div>
 
-        {/* ペンモード中だけキャンバス全面に重ねる透明オーバーレイ。
-            これより下(worldRef)へのpointerdownを奪うことで、カード選択・ドラッグ・
-            背景パンが同時に発生しないようにしている。Sidebar(zIndex:10)より低いzIndexに
-            しているので、ペンモード中でもDrawアイコンをクリックして抜けられる。 */}
+        {/* ペンモード中だけキャンバス全面に重ねる透明オーバーレイ。これより下(worldRef)へのpointerdownを奪うことで、カード選択・ドラッグ・背景パンが同時に発生しないようにしている。 */}
         {isDrawActive && (
           <div
             onPointerDown={handleDrawPointerDown}

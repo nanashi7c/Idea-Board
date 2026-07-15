@@ -1,18 +1,11 @@
-// HTML5ドラッグ&ドロップ(draggable属性・dataTransfer)とonClickだけで完結するため、
-// canvas.tsx(Konva)・canvas-dom.tsx(DOM自前実装)のどちらからも同じ見た目・同じ挙動で使える。
 "use client";
 
 import { useRef } from "react";
 import type { ChangeEvent, DragEvent, ReactNode } from "react";
 
-// サイドバーからカードをキャンバスへ配置する方法は2種類。
 // note/column: HTML5のドラッグ&ドロップで、キャンバス上の好きな位置にドロップして配置する。
 // draw: ドラッグ&ドロップではなく「ペンモード」への切り替えスイッチとして働く。
-// ペンモード中はキャンバス上をマウスドラッグ/ペンでなぞった軌跡そのものがDrawカードになり、
-// Escキーまたはもう一度Drawアイコンを押すとペンモードを終了する。
-// image: ドラッグ&ドロップではなく、クリックでOS標準のファイル選択ダイアログを開くスイッチ。
-// サイドバー自体は画像データを持たないため、note/columnと同じドラッグ方式にはできない。
-
+// image: サイドバー自体は画像データを持たないため、クリックでOS標準のファイル選択
 // ドラッグ中のカード種別をdataTransferに載せる際のMIMEタイプ(自前の識別子)。
 // テキスト形式の他のドラッグ操作と誤って反応しないよう、専用の識別子にしている。
 export const CARD_TYPE_DRAG_MIME = "application/x-idea-board-card-type";
@@ -23,7 +16,6 @@ type Props = {
   onPickImageFile: (file: File) => void;
 };
 
-// キャンバス左端に固定表示するツールサイドバー。
 export function Sidebar({
   isDrawActive,
   onToggleDraw,
@@ -136,8 +128,6 @@ function SidebarIcon({
     </button>
   );
 }
-
-// 以下、アイコン用の簡易SVG。外部アイコンライブラリを追加せず、spike内で完結させるため自前で用意する。
 
 function NoteIcon() {
   return (
