@@ -547,15 +547,6 @@ export function SpikeCanvasDom() {
     window.addEventListener("pointerup", onUp);
   };
 
-  const handleBackgroundDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target !== e.currentTarget) return; // カード自体のダブルクリックは各カード側で処理
-    // 背景をダブルクリックしたら、その位置に新しいNoteカードを作る(カード作成のUI)。
-    const pos = toWorldPos(e.clientX, e.clientY);
-    const newCard = createNoteCard(pos.x, pos.y);
-    setCards((prev) => [...prev, newCard]);
-    setSelectedId(newCard.id);
-  };
-
   // サイドバーのImageアイコンで選択したファイル、またはドラッグ&ドロップされた画像ファイルを
   // 読み込み、指定したワールド座標を中心にImageカードとして追加する共通処理。
   // data URL化するのはlocalStorageへの保存(JSON.stringify)にそのまま乗せるため
@@ -794,7 +785,6 @@ export function SpikeCanvasDom() {
         ref={containerRef}
         onWheel={handleWheel}
         onPointerDown={isDrawActive ? undefined : handleBackgroundPointerDown}
-        onDoubleClick={isDrawActive ? undefined : handleBackgroundDoubleClick}
         onDragOver={handleContainerDragOver}
         onDrop={handleContainerDrop}
         style={{

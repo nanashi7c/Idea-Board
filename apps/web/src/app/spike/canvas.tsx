@@ -556,17 +556,6 @@ export function SpikeCanvas() {
             if (isDrawActive) return;
             if (e.target === e.target.getStage()) setSelectedId(null);
           }}
-          onDblClick={(e) => {
-            if (isDrawActive) return;
-            // 背景をダブルクリックしたら、その位置に新しいNoteカードを作る（カード作成のUI）。
-            if (e.target !== e.target.getStage()) return; // カード自体のダブルクリックは各カード側で処理
-            const stage = e.target.getStage();
-            const pos = stage?.getRelativePointerPosition();
-            if (!pos) return;
-            const newCard = createNoteCard(pos.x, pos.y);
-            setCards((prev) => [...prev, newCard]);
-            setSelectedId(newCard.id);
-          }}
         >
           <Layer>
             {/* cardsを1件ずつ描画する。Columnに属するNoteはトップレベルでは描画せず、
