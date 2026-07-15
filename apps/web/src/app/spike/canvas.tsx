@@ -204,8 +204,17 @@ export function SpikeCanvas() {
   const activeDrawCardIdRef = useRef<string | null>(null);
 
   // Stageの実ピクセルサイズ（ウィンドウいっぱいに表示するため、画面サイズと同期させる）。
-  // SSRではwindowが存在しないため初期値は0にしておき、マウント後のuseEffectで実際の値に更新する。
-  const [size, setSize] = useState({ width: 0, height: 0 });
+  // このコンポーネントはpage.tsxでssr: falseとして動的importされているため、関数本体は
+  // ブラウザ上でしか実行されずwindowは常に参照できる。初期値を{width:0, height:0}にすると、
+  // Stageが一瞬0x0で描画された際にKonva内部のbufferCanvas(cornerRadiusとshadowを同時に
+  // 持つImageノードの描画で使われる。node_modules/konva/lib/shapes/Image.jsの
+  // _useBufferCanvas、Stage.jsのbufferCanvas参照)も0x0で作られてしまい、Imageカードの
+  // 追加時に「Failed to execute 'drawImage' ... width or height of 0」という実行時エラーに
+  // なる不具合があったため、初回から実際のwindowサイズを使う。
+  const [size, setSize] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
   // キャンバス全体の拡大率（ズーム）。1が等倍。
   const [scale, setScale] = useState(1);
   // キャンバス全体の表示位置（パン）。Stage自体をドラッグして動かした時の位置を保持する。
@@ -228,7 +237,7 @@ export function SpikeCanvas() {
   useEffect(() => {
     const updateSize = () =>
       setSize({ width: window.innerWidth, height: window.innerHeight });
-    updateSize(); // マウント直後にも一度実行して初期サイズを反映
+    updateSize(); // 初期state設定後にリサイズが起きていた場合に備えて念のため再同期
     window.addEventListener("resize", updateSize);
     return () => window.removeEventListener("resize", updateSize);
   }, []);
