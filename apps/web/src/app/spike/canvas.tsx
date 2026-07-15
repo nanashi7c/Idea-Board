@@ -294,32 +294,11 @@ export function SpikeCanvas() {
     };
   };
 
-  // サイドバーのNote/Columnアイコンをキャンバス上にドラッグ&ドロップした時の受け皿。
-  // dataTransferにCARD_TYPE_DRAG_MIMEが載っている(=サイドバー発のドラッグである)時だけ
-  // ドロップを許可する。
-  const handleContainerDragOver = (e: DragEvent<HTMLDivElement>) => {
-    if (!e.dataTransfer.types.includes(CARD_TYPE_DRAG_MIME)) return;
-    e.preventDefault(); // これを呼ばないとdropイベントが発火しない(HTML5 D&Dの仕様)
-    e.dataTransfer.dropEffect = "copy";
-  };
-
-  const handleContainerDrop = (e: DragEvent<HTMLDivElement>) => {
-    const cardType = e.dataTransfer.getData(CARD_TYPE_DRAG_MIME);
-    if (cardType !== "note" && cardType !== "column") return;
-    e.preventDefault();
-    const pos = toWorldPos(e.clientX, e.clientY);
-    const newCard =
-      cardType === "note"
-        ? createNoteCard(pos.x, pos.y)
-        : createColumnCard(pos.x, pos.y);
-    setCards((prev) => [...prev, newCard]);
-    setSelectedId(newCard.id);
-  };
-
-  // サイドバーのImageアイコンで選択したファイルを読み込み、画面中央にImageカードとして
-  // 追加する。data URL化するのはlocalStorageへの保存(JSON.stringify)にそのまま乗せるため
+  // サイドバーのImageアイコンで選択したファイル、またはドラッグ&ドロップされた画像ファイルを
+  // 読み込み、指定したワールド座標を中心にImageカードとして追加する共通処理。
+  // data URL化するのはlocalStorageへの保存(JSON.stringify)にそのまま乗せるため
   // (Blob URLはページをリロードすると失効し、参照が壊れてしまう)。
-  const handlePickImageFile = (file: File) => {
+  const addImageCardAt = (file: File, center: { x: number; y: number }) => {
     const reader = new FileReader();
     reader.onload = () => {
       const src = reader.result;
@@ -327,17 +306,13 @@ export function SpikeCanvas() {
       const img = new Image();
       img.onload = () => {
         // createImageCardはIMAGE_MAX_WIDTH/HEIGHTに収まるよう縮小した幅・高さを返すため、
-        // 先に(0, 0)で作ってからその幅・高さを使って画面中央に来るx, yを計算し直す。
+        // 先に(0, 0)で作ってからその幅・高さを使ってcenterが中心に来るx, yを計算し直す。
         const placeholder = createImageCard(
           0,
           0,
           src,
           img.naturalWidth,
           img.naturalHeight,
-        );
-        const center = toWorldPos(
-          window.innerWidth / 2,
-          window.innerHeight / 2,
         );
         const newCard = {
           ...placeholder,
@@ -350,6 +325,52 @@ export function SpikeCanvas() {
       img.src = src;
     };
     reader.readAsDataURL(file);
+  };
+
+  // サイドバーのImageアイコンで選択したファイルを、画面中央にImageカードとして追加する。
+  const handlePickImageFile = (file: File) => {
+    addImageCardAt(
+      file,
+      toWorldPos(window.innerWidth / 2, window.innerHeight / 2),
+    );
+  };
+
+  // サイドバーのNote/Columnアイコン、またはOSのファイルをキャンバス上にドラッグ&ドロップ
+  // した時の受け皿。dataTransfer.typesにCARD_TYPE_DRAG_MIME(サイドバー発)か
+  // "Files"(OSのファイルドラッグ)のどちらかが載っている時だけドロップを許可する。
+  const handleContainerDragOver = (e: DragEvent<HTMLDivElement>) => {
+    const isCardDrag = e.dataTransfer.types.includes(CARD_TYPE_DRAG_MIME);
+    const isFileDrag = e.dataTransfer.types.includes("Files");
+    if (!isCardDrag && !isFileDrag) return;
+    e.preventDefault(); // これを呼ばないとdropイベントが発火しない(HTML5 D&Dの仕様)
+    e.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleContainerDrop = (e: DragEvent<HTMLDivElement>) => {
+    // OSのファイルマネージャ等から画像ファイルが直接ドロップされた場合。
+    // 複数枚まとめてドロップされても完全に重ならないよう、1枚ごとに少しずつ
+    // ドロップ位置をずらして配置する。
+    if (e.dataTransfer.files.length > 0) {
+      e.preventDefault();
+      const pos = toWorldPos(e.clientX, e.clientY);
+      Array.from(e.dataTransfer.files)
+        .filter((file) => file.type.startsWith("image/"))
+        .forEach((file, i) => {
+          addImageCardAt(file, { x: pos.x + i * 24, y: pos.y + i * 24 });
+        });
+      return;
+    }
+
+    const cardType = e.dataTransfer.getData(CARD_TYPE_DRAG_MIME);
+    if (cardType !== "note" && cardType !== "column") return;
+    e.preventDefault();
+    const pos = toWorldPos(e.clientX, e.clientY);
+    const newCard =
+      cardType === "note"
+        ? createNoteCard(pos.x, pos.y)
+        : createColumnCard(pos.x, pos.y);
+    setCards((prev) => [...prev, newCard]);
+    setSelectedId(newCard.id);
   };
 
   // Drawアイコンのオン/オフ切り替え。オフにする瞬間、作成中だったDrawカードへの
