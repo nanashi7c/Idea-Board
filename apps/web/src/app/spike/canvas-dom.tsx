@@ -18,6 +18,7 @@ import {
   createNoteCard,
   createColumnCard,
   createDrawCard,
+  createImageCard,
   addStrokeToDrawCard,
   getColumnChildIds,
   loadCards,
@@ -577,6 +578,42 @@ export function SpikeCanvasDom() {
     setSelectedId(newCard.id);
   };
 
+  // サイドバーのImageアイコンで選択したファイルを読み込み、画面中央にImageカードとして
+  // 追加する。data URL化するのはlocalStorageへの保存(JSON.stringify)にそのまま乗せるため
+  // (Blob URLはページをリロードすると失効し、参照が壊れてしまう)。
+  const handlePickImageFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = reader.result;
+      if (typeof src !== "string") return;
+      const img = new Image();
+      img.onload = () => {
+        // createImageCardはIMAGE_MAX_WIDTH/HEIGHTに収まるよう縮小した幅・高さを返すため、
+        // 先に(0, 0)で作ってからその幅・高さを使って画面中央に来るx, yを計算し直す。
+        const placeholder = createImageCard(
+          0,
+          0,
+          src,
+          img.naturalWidth,
+          img.naturalHeight,
+        );
+        const center = toWorldPos(
+          window.innerWidth / 2,
+          window.innerHeight / 2,
+        );
+        const newCard = {
+          ...placeholder,
+          x: center.x - placeholder.width / 2,
+          y: center.y - placeholder.height / 2,
+        };
+        setCards((prev) => [...prev, newCard]);
+        setSelectedId(newCard.id);
+      };
+      img.src = src;
+    };
+    reader.readAsDataURL(file);
+  };
+
   // Drawアイコンのオン/オフ切り替え。オフにする瞬間、作成中だったDrawカードへの
   // 参照(activeDrawCardIdRef)もリセットする(再度オンにした時は新しい1枚として扱う)。
   const handleToggleDraw = () => {
@@ -670,7 +707,7 @@ export function SpikeCanvasDom() {
   // cards.map(...)での全カード分の要素再生成・reconcileが走ってしまう。
   // それを避けるため、ドラッグ中はcardRefsから取得した実DOM要素のstyle.left/topを直接書き換え、
   // pointerupで指を離した瞬間に初めてsetCardsでReactのstateへ反映する。
-  // note/swatch/column(タイトルバー)/drawの全カード種別で共通して使う。
+  // note/swatch/column(タイトルバー)/draw/imageの全カード種別で共通して使う。
   const handleCardPointerDown = (
     e: React.PointerEvent<HTMLDivElement>,
     card: Card,
@@ -721,7 +758,11 @@ export function SpikeCanvasDom() {
 
   return (
     <>
-      <Sidebar isDrawActive={isDrawActive} onToggleDraw={handleToggleDraw} />
+      <Sidebar
+        isDrawActive={isDrawActive}
+        onToggleDraw={handleToggleDraw}
+        onPickImageFile={handlePickImageFile}
+      />
       {/* containerRef: Konva版のStageに相当する、画面いっぱいの背景。
           position: fixed + inset: 0で常にビューポート全体を覆い、overflow: hiddenで
           ワールド側(worldRef)がこの範囲外にはみ出してもスクロールバーが出ないようにしている。
@@ -758,8 +799,7 @@ export function SpikeCanvasDom() {
           }}
         >
           {/* cardsを1件ずつ描画する。Columnに属するNote(columnChildIdsに含まれるid)は
-              トップレベルでは描画せず、ColumnCardView側で描画する。
-              CardTypeのimageは未実装のためnullを返し、何も描画しない。 */}
+              トップレベルでは描画せず、ColumnCardView側で描画する。 */}
           {cards.map((card) => {
             if (columnChildIds.has(card.id)) return null;
 
@@ -818,6 +858,47 @@ export function SpikeCanvasDom() {
                   }}
                 >
                   {card.hex}
+                </div>
+              );
+            }
+
+            if (card.type === "image") {
+              return (
+                <div
+                  key={card.id}
+                  ref={(el) => {
+                    if (el) cardRefs.current.set(card.id, el);
+                    else cardRefs.current.delete(card.id);
+                  }}
+                  onPointerDown={(e) => handleCardPointerDown(e, card)}
+                  style={{
+                    position: "absolute",
+                    left: card.x,
+                    top: card.y,
+                    width: card.width,
+                    height: card.height,
+                    boxSizing: "border-box",
+                    borderRadius: 4,
+                    // 画像自体をwidth/height 100%で敷き詰めた上でoverflow: hiddenにすることで、
+                    // borderRadiusの丸みから画像の角がはみ出さないようにする。
+                    overflow: "hidden",
+                    boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+                    outline:
+                      selectedId === card.id ? "2px solid #3b82f6" : "none",
+                    cursor: "grab",
+                  }}
+                >
+                  <img
+                    src={card.src}
+                    alt={card.caption ?? ""}
+                    draggable={false}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                      display: "block",
+                    }}
+                  />
                 </div>
               );
             }

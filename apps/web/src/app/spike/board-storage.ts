@@ -30,6 +30,11 @@ export const COLUMN_ROW_GAP = 8;
 export const DRAW_STROKE_COLOR = "#1f2937";
 export const DRAW_STROKE_WIDTH = 2;
 
+// Imageカードの見た目に関する定数。アップロードされた画像の実サイズがそのままだと
+// 大きすぎることがあるため、この最大サイズに収まるよう縦横比を保って縮小して配置する。
+export const IMAGE_MAX_WIDTH = 240;
+export const IMAGE_MAX_HEIGHT = 240;
+
 // 初回アクセス時（localStorageに何も保存されていない時）に表示する初期カード。
 // Note（付箋）1枚とSwatch（色見本）1枚を最初から置いておくことで、
 // 操作方法を説明しなくても「動かせるもの」がある状態からスタートできるようにしている。
@@ -120,6 +125,32 @@ export function createDrawCard(x: number, y: number): Card {
     width: 1,
     height: 1,
     strokes: [],
+  };
+}
+
+// 新しいImageカードを1枚作る。サイドバーのImageアイコンで選択したファイルを
+// FileReaderでdata URL化し、Imageで実サイズ(naturalWidth/naturalHeight)を取得した後に呼ばれる。
+// IMAGE_MAX_WIDTH/IMAGE_MAX_HEIGHTを超える場合は、縦横比を保ったまま縮小する。
+export function createImageCard(
+  x: number,
+  y: number,
+  src: string,
+  naturalWidth: number,
+  naturalHeight: number,
+): Card {
+  const ratio = Math.min(
+    1,
+    IMAGE_MAX_WIDTH / naturalWidth,
+    IMAGE_MAX_HEIGHT / naturalHeight,
+  );
+  return {
+    id: crypto.randomUUID(),
+    type: "image",
+    x,
+    y,
+    width: Math.round(naturalWidth * ratio),
+    height: Math.round(naturalHeight * ratio),
+    src,
   };
 }
 

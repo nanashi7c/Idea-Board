@@ -2,13 +2,16 @@
 // canvas.tsx(Konva)・canvas-dom.tsx(DOM自前実装)のどちらからも同じ見た目・同じ挙動で使える。
 "use client";
 
-import type { DragEvent, ReactNode } from "react";
+import { useRef } from "react";
+import type { ChangeEvent, DragEvent, ReactNode } from "react";
 
 // サイドバーからカードをキャンバスへ配置する方法は2種類。
 // note/column: HTML5のドラッグ&ドロップで、キャンバス上の好きな位置にドロップして配置する。
 // draw: ドラッグ&ドロップではなく「ペンモード」への切り替えスイッチとして働く。
 // ペンモード中はキャンバス上をマウスドラッグ/ペンでなぞった軌跡そのものがDrawカードになり、
 // Escキーまたはもう一度Drawアイコンを押すとペンモードを終了する。
+// image: ドラッグ&ドロップではなく、クリックでOS標準のファイル選択ダイアログを開くスイッチ。
+// サイドバー自体は画像データを持たないため、note/columnと同じドラッグ方式にはできない。
 
 // ドラッグ中のカード種別をdataTransferに載せる際のMIMEタイプ(自前の識別子)。
 // テキスト形式の他のドラッグ操作と誤って反応しないよう、専用の識別子にしている。
@@ -17,10 +20,25 @@ export const CARD_TYPE_DRAG_MIME = "application/x-idea-board-card-type";
 type Props = {
   isDrawActive: boolean;
   onToggleDraw: () => void;
+  onPickImageFile: (file: File) => void;
 };
 
 // キャンバス左端に固定表示するツールサイドバー。
-export function Sidebar({ isDrawActive, onToggleDraw }: Props) {
+export function Sidebar({
+  isDrawActive,
+  onToggleDraw,
+  onPickImageFile,
+}: Props) {
+  // Imageアイコンのクリックを、非表示にしたfile inputのクリックへ転送するための参照。
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // 同じファイルを連続で選んでもonChangeが発火するよう、選択後にvalueをリセットする。
+    e.target.value = "";
+    if (file) onPickImageFile(file);
+  };
+
   return (
     <div
       style={{
@@ -58,6 +76,9 @@ export function Sidebar({ isDrawActive, onToggleDraw }: Props) {
       >
         <ColumnIcon />
       </SidebarIcon>
+      <SidebarIcon label="Image" onClick={() => fileInputRef.current?.click()}>
+        <ImageIcon />
+      </SidebarIcon>
       <SidebarIcon
         label={isDrawActive ? "ペン中(Escで終了)" : "Draw"}
         active={isDrawActive}
@@ -65,6 +86,13 @@ export function Sidebar({ isDrawActive, onToggleDraw }: Props) {
       >
         <DrawIcon />
       </SidebarIcon>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: "none" }}
+        onChange={handleFileInputChange}
+      />
     </div>
   );
 }
@@ -180,6 +208,36 @@ function ColumnIcon() {
         rx="1"
         stroke="currentColor"
         strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+function ImageIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <rect
+        x="3"
+        y="4"
+        width="18"
+        height="16"
+        rx="2"
+        stroke="currentColor"
+        strokeWidth="2"
+      />
+      <circle
+        cx="8.5"
+        cy="9.5"
+        r="1.5"
+        stroke="currentColor"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M21 15l-5-5-4 4-2-2-5 5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+        strokeLinecap="round"
       />
     </svg>
   );

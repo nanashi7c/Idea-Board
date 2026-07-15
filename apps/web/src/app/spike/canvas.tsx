@@ -8,8 +8,16 @@ import type { DragEvent } from "react";
 // Stage = 描画領域全体（<canvas>要素そのものに相当）
 // Layer = Stage内の描画レイヤー（複数重ねられる。今回は1枚だけ使用）
 // Group  = 複数の図形をまとめて1つのオブジェクトとして扱う入れ物（カード1枚 = Group 1つ）
-// Rect / Text / Line = それぞれ矩形・文字・折れ線を描画する図形コンポーネント
-import { Stage, Layer, Rect, Text, Group, Line } from "react-konva";
+// Rect / Text / Line / Image = それぞれ矩形・文字・折れ線・画像を描画する図形コンポーネント
+import {
+  Stage,
+  Layer,
+  Rect,
+  Text,
+  Group,
+  Line,
+  Image as KonvaImage,
+} from "react-konva";
 // Konva本体。強制再描画(batchDraw)や、ドラッグ中に直接書き換えるノードの型(Konva.Line)、
 // イベントオブジェクトの型(Konva.KonvaEventObject)を使うためにインポートする。
 import Konva from "konva";
@@ -23,6 +31,7 @@ import {
   createNoteCard,
   createColumnCard,
   createDrawCard,
+  createImageCard,
   addStrokeToDrawCard,
   getColumnChildIds,
   loadCards,
@@ -43,6 +52,7 @@ import { Sidebar, CARD_TYPE_DRAG_MIME } from "./toolbar";
 type NoteCard = Extract<Card, { type: "note" }>;
 type ColumnCardType = Extract<Card, { type: "column" }>;
 type DrawCardType = Extract<Card, { type: "draw" }>;
+type ImageCardType = Extract<Card, { type: "image" }>;
 
 // Column内の「+ Note」ボタンの高さ。
 const ADD_BUTTON_HEIGHT = 28;
@@ -113,6 +123,69 @@ function resolveEditingTarget(editingId: string | null, cards: Card[]) {
     };
   }
   return null;
+}
+
+// Imageカード1枚分の描画。KonvaのImageコンポーネントはsrcの文字列を直接渡せず、
+// 読み込み済みのHTMLImageElement(などのCanvasImageSource)を要求するため、
+// data URLからのHTMLImageElement読み込みをこのコンポーネント内で管理する
+// (cards.map(...)の中で直接useStateを呼ぶとReactのフックのルールに反するため、
+// 専用コンポーネントに切り出す必要がある)。
+function ImageCardView({
+  card,
+  isSelected,
+  isDrawActive,
+  onSelect,
+  onDragEnd,
+}: {
+  card: ImageCardType;
+  isSelected: boolean;
+  isDrawActive: boolean;
+  onSelect: () => void;
+  onDragEnd: (x: number, y: number) => void;
+}) {
+  const [image, setImage] = useState<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const img = new window.Image();
+    img.src = card.src;
+    img.onload = () => setImage(img);
+    return () => {
+      img.onload = null;
+    };
+  }, [card.src]);
+
+  return (
+    <Group
+      x={card.x}
+      y={card.y}
+      draggable={!isDrawActive}
+      onClick={() => {
+        if (!isDrawActive) onSelect();
+      }}
+      onDragEnd={(e) => onDragEnd(e.target.x(), e.target.y())}
+      onMouseEnter={(e) => {
+        const container = e.target.getStage()?.container();
+        if (container) container.style.cursor = "grab";
+      }}
+      onMouseLeave={(e) => {
+        const container = e.target.getStage()?.container();
+        if (container) container.style.cursor = "default";
+      }}
+    >
+      {image && (
+        <KonvaImage
+          image={image}
+          width={card.width}
+          height={card.height}
+          cornerRadius={4}
+          stroke={isSelected ? "#3b82f6" : undefined}
+          strokeWidth={isSelected ? 2 : 0}
+          shadowBlur={4}
+          shadowOpacity={0.2}
+        />
+      )}
+    </Group>
+  );
 }
 
 // spikeページの本体コンポーネント。カードの状態（配列）と、キャンバスの見た目（拡大率・位置）を
@@ -189,7 +262,10 @@ export function SpikeCanvas() {
             .filter((c) => !idsToRemove.has(c.id))
             .map((c) =>
               c.type === "column"
-                ? { ...c, cardIds: c.cardIds.filter((id) => !idsToRemove.has(id)) }
+                ? {
+                    ...c,
+                    cardIds: c.cardIds.filter((id) => !idsToRemove.has(id)),
+                  }
                 : c,
             );
         });
@@ -233,9 +309,47 @@ export function SpikeCanvas() {
     e.preventDefault();
     const pos = toWorldPos(e.clientX, e.clientY);
     const newCard =
-      cardType === "note" ? createNoteCard(pos.x, pos.y) : createColumnCard(pos.x, pos.y);
+      cardType === "note"
+        ? createNoteCard(pos.x, pos.y)
+        : createColumnCard(pos.x, pos.y);
     setCards((prev) => [...prev, newCard]);
     setSelectedId(newCard.id);
+  };
+
+  // サイドバーのImageアイコンで選択したファイルを読み込み、画面中央にImageカードとして
+  // 追加する。data URL化するのはlocalStorageへの保存(JSON.stringify)にそのまま乗せるため
+  // (Blob URLはページをリロードすると失効し、参照が壊れてしまう)。
+  const handlePickImageFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = reader.result;
+      if (typeof src !== "string") return;
+      const img = new Image();
+      img.onload = () => {
+        // createImageCardはIMAGE_MAX_WIDTH/HEIGHTに収まるよう縮小した幅・高さを返すため、
+        // 先に(0, 0)で作ってからその幅・高さを使って画面中央に来るx, yを計算し直す。
+        const placeholder = createImageCard(
+          0,
+          0,
+          src,
+          img.naturalWidth,
+          img.naturalHeight,
+        );
+        const center = toWorldPos(
+          window.innerWidth / 2,
+          window.innerHeight / 2,
+        );
+        const newCard = {
+          ...placeholder,
+          x: center.x - placeholder.width / 2,
+          y: center.y - placeholder.height / 2,
+        };
+        setCards((prev) => [...prev, newCard]);
+        setSelectedId(newCard.id);
+      };
+      img.src = src;
+    };
+    reader.readAsDataURL(file);
   };
 
   // Drawアイコンのオン/オフ切り替え。オフにする瞬間、作成中だったDrawカードへの
@@ -280,7 +394,9 @@ export function SpikeCanvas() {
     setCards((prev) => {
       const activeId = activeDrawCardIdRef.current;
       const existing = activeId
-        ? prev.find((c): c is DrawCardType => c.id === activeId && c.type === "draw")
+        ? prev.find(
+            (c): c is DrawCardType => c.id === activeId && c.type === "draw",
+          )
         : undefined;
       if (existing) {
         const updated = addStrokeToDrawCard(existing, worldPoints);
@@ -334,7 +450,11 @@ export function SpikeCanvas() {
     // <> </> はReact Fragment。サイドバー・KonvaのStage（Canvas）と、
     // その上に重ねるHTMLの<textarea>/<input>を、余分なdivを挟まずに並べて返すために使っている。
     <>
-      <Sidebar isDrawActive={isDrawActive} onToggleDraw={handleToggleDraw} />
+      <Sidebar
+        isDrawActive={isDrawActive}
+        onToggleDraw={handleToggleDraw}
+        onPickImageFile={handlePickImageFile}
+      />
       {/* wrapperRef: Stageを内包する画面いっぱいのdiv。サイドバーからのドラッグ&ドロップは
           Konvaのコンポーネントではなく、この素のdivのonDragOver/onDropで受ける
           (react-konvaのStageはKonvaの設定に対応するprops以外を素通ししないため)。 */}
@@ -342,7 +462,11 @@ export function SpikeCanvas() {
         ref={wrapperRef}
         onDragOver={handleContainerDragOver}
         onDrop={handleContainerDrop}
-        style={{ position: "fixed", inset: 0, cursor: isDrawActive ? "crosshair" : undefined }}
+        style={{
+          position: "fixed",
+          inset: 0,
+          cursor: isDrawActive ? "crosshair" : undefined,
+        }}
       >
         <Stage
           // Stageの実ピクセルサイズ。ウィンドウサイズに追従（上のuseEffect参照）。
@@ -416,8 +540,7 @@ export function SpikeCanvas() {
         >
           <Layer>
             {/* cardsを1件ずつ描画する。Columnに属するNoteはトップレベルでは描画せず、
-                Column自身の描画の中で(layoutColumnChildrenの位置に)描画する。
-                CardTypeのimageは未実装のためnullを返し、何も描画しない。 */}
+                Column自身の描画の中で(layoutColumnChildrenの位置に)描画する。 */}
             {cards.map((card) => {
               if (columnChildIds.has(card.id)) return null;
 
@@ -437,7 +560,9 @@ export function SpikeCanvas() {
                     onDragEnd={(e) => {
                       const { x, y } = e.target.position();
                       setCards((prev) =>
-                        prev.map((c) => (c.id === card.id ? { ...c, x, y } : c)),
+                        prev.map((c) =>
+                          c.id === card.id ? { ...c, x, y } : c,
+                        ),
                       );
                     }}
                     // カードにマウスが乗ったらカーソルを変える（canvas-dom版のcursor相当）。
@@ -496,7 +621,9 @@ export function SpikeCanvas() {
                     onDragEnd={(e) => {
                       const { x, y } = e.target.position();
                       setCards((prev) =>
-                        prev.map((c) => (c.id === card.id ? { ...c, x, y } : c)),
+                        prev.map((c) =>
+                          c.id === card.id ? { ...c, x, y } : c,
+                        ),
                       );
                     }}
                     onMouseEnter={(e) => {
@@ -531,8 +658,30 @@ export function SpikeCanvas() {
                 );
               }
 
+              if (card.type === "image") {
+                return (
+                  <ImageCardView
+                    key={card.id}
+                    card={card}
+                    isSelected={selectedId === card.id}
+                    isDrawActive={isDrawActive}
+                    onSelect={() => setSelectedId(card.id)}
+                    onDragEnd={(x, y) => {
+                      setCards((prev) =>
+                        prev.map((c) =>
+                          c.id === card.id ? { ...c, x, y } : c,
+                        ),
+                      );
+                    }}
+                  />
+                );
+              }
+
               if (card.type === "column") {
-                const { items, addButtonY, totalHeight } = layoutColumnChildren(card, cards);
+                const { items, addButtonY, totalHeight } = layoutColumnChildren(
+                  card,
+                  cards,
+                );
                 return (
                   <Group key={card.id} x={card.x} y={card.y}>
                     <Rect
@@ -576,7 +725,9 @@ export function SpikeCanvas() {
                         if (!group) return;
                         setCards((prev) =>
                           prev.map((c) =>
-                            c.id === card.id ? { ...c, x: group.x(), y: group.y() } : c,
+                            c.id === card.id
+                              ? { ...c, x: group.x(), y: group.y() }
+                              : c,
                           ),
                         );
                       }}
@@ -619,7 +770,9 @@ export function SpikeCanvas() {
                           width={NOTE_WIDTH}
                           height={note.height}
                           fill={note.color}
-                          stroke={selectedId === note.id ? "#3b82f6" : undefined}
+                          stroke={
+                            selectedId === note.id ? "#3b82f6" : undefined
+                          }
                           strokeWidth={selectedId === note.id ? 2 : 0}
                           cornerRadius={4}
                         />
@@ -685,7 +838,9 @@ export function SpikeCanvas() {
                     onDragEnd={(e) => {
                       const { x, y } = e.target.position();
                       setCards((prev) =>
-                        prev.map((c) => (c.id === card.id ? { ...c, x, y } : c)),
+                        prev.map((c) =>
+                          c.id === card.id ? { ...c, x, y } : c,
+                        ),
                       );
                     }}
                     onMouseEnter={(e) => {
@@ -781,7 +936,11 @@ export function SpikeCanvas() {
             setCards((prev) =>
               prev.map((c) =>
                 c.id === editingTarget.id
-                  ? { ...c, text, height: Math.max(NOTE_MIN_HEIGHT, measuredHeight) }
+                  ? {
+                      ...c,
+                      text,
+                      height: Math.max(NOTE_MIN_HEIGHT, measuredHeight),
+                    }
                   : c,
               ),
             );
@@ -810,7 +969,9 @@ export function SpikeCanvas() {
           onBlur={(e) => {
             const title = e.target.value;
             setCards((prev) =>
-              prev.map((c) => (c.id === editingTarget.id ? { ...c, title } : c)),
+              prev.map((c) =>
+                c.id === editingTarget.id ? { ...c, title } : c,
+              ),
             );
             setEditingId(null);
           }}
