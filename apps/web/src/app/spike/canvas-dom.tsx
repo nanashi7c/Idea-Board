@@ -685,36 +685,28 @@ export function SpikeCanvasDom() {
 
   // サイドバーのImageアイコンで選択したファイル、またはドラッグ&ドロップされた画像ファイルを
   // 読み込み、指定したワールド座標を中心にImageカードとして追加する共通処理。
-  // data URL化するのはlocalStorageへの保存(JSON.stringify)にそのまま乗せるため
-  // (Blob URLはページをリロードすると失効し、参照が壊れてしまう)。
+  // 読み込み自体はすぐ失効してよいBlob URLで行う(Imageへdrawした直後にrevokeするだけなので、
+  // ページをリロードすると失効する性質は問題にならない)。localStorageに保存するdata URL化は
+  // createImageCard内で、縮小後サイズに対して行う(元画像そのままdata URL化すると
+  // QuotaExceededErrorに繋がりやすいため。詳細はcreateImageCardのコメント参照)。
   const addImageCardAt = (file: File, center: { x: number; y: number }) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const src = reader.result;
-      if (typeof src !== "string") return;
-      const img = new Image();
-      img.onload = () => {
-        // createImageCardはIMAGE_MAX_WIDTH/HEIGHTに収まるよう縮小した幅・高さを返すため、
-        // 先に(0, 0)で作ってからその幅・高さを使ってcenterが中心に来るx, yを計算し直す。
-        const placeholder = createImageCard(
-          0,
-          0,
-          src,
-          img.naturalWidth,
-          img.naturalHeight,
-        );
-        const newCard = {
-          ...placeholder,
-          x: center.x - placeholder.width / 2,
-          y: center.y - placeholder.height / 2,
-        };
-        // centerが既存Columnの領域内なら、トップレベルではなくそのColumnの子として追加する。
-        setCards((prev) => insertCardAtPoint(prev, newCard, center));
-        setSelectedId(newCard.id);
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      // createImageCardはIMAGE_MAX_WIDTH/HEIGHTに収まるよう縮小した幅・高さを返すため、
+      // 先に(0, 0)で作ってからその幅・高さを使ってcenterが中心に来るx, yを計算し直す。
+      const placeholder = createImageCard(0, 0, img);
+      const newCard = {
+        ...placeholder,
+        x: center.x - placeholder.width / 2,
+        y: center.y - placeholder.height / 2,
       };
-      img.src = src;
+      // centerが既存Columnの領域内なら、トップレベルではなくそのColumnの子として追加する。
+      setCards((prev) => insertCardAtPoint(prev, newCard, center));
+      setSelectedId(newCard.id);
     };
-    reader.readAsDataURL(file);
+    img.src = objectUrl;
   };
 
   // サイドバーのImageアイコンで選択したファイルを、画面中央にImageカードとして追加する。

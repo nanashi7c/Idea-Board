@@ -131,29 +131,37 @@ export function createDrawCard(x: number, y: number): Card {
   };
 }
 
-// 新しいImageカードを1枚作る。サイドバーのImageアイコンで選択したファイルを
-// FileReaderでdata URL化し、Imageで実サイズ(naturalWidth/naturalHeight)を取得した後に呼ばれる。
-// IMAGE_MAX_WIDTH/IMAGE_MAX_HEIGHTを超える場合は、縦横比を保ったまま縮小する。
+// 新しいImageカードを1枚作る。サイドバーのImageアイコンで選択したファイルをImage要素として
+// 読み込んだ後に呼ばれる。IMAGE_MAX_WIDTH/IMAGE_MAX_HEIGHTを超える場合は縦横比を保ったまま
+// 縮小し、srcもその縮小後サイズでcanvasに描き直したdata URLにする
+// (表示サイズだけ縮小してsrcは元画像のままだと、スマホ写真1枚でlocalStorageの容量上限
+// (QuotaExceededError)を超えてしまうことがあったため)。
 export function createImageCard(
   x: number,
   y: number,
-  src: string,
-  naturalWidth: number,
-  naturalHeight: number,
+  img: HTMLImageElement,
 ): Card {
   const ratio = Math.min(
     1,
-    IMAGE_MAX_WIDTH / naturalWidth,
-    IMAGE_MAX_HEIGHT / naturalHeight,
+    IMAGE_MAX_WIDTH / img.naturalWidth,
+    IMAGE_MAX_HEIGHT / img.naturalHeight,
   );
+  const width = Math.round(img.naturalWidth * ratio);
+  const height = Math.round(img.naturalHeight * ratio);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d")!.drawImage(img, 0, 0, width, height);
+
   return {
     id: crypto.randomUUID(),
     type: "image",
     x,
     y,
-    width: Math.round(naturalWidth * ratio),
-    height: Math.round(naturalHeight * ratio),
-    src,
+    width,
+    height,
+    src: canvas.toDataURL("image/jpeg", 0.85),
   };
 }
 
