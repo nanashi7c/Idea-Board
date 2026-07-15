@@ -2,9 +2,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type {
   Dispatch,
   PointerEvent as ReactPointerEvent,
+  ReactNode,
   RefObject,
   SetStateAction,
 } from "react";
@@ -13,6 +15,13 @@ import type {
 import type { Card } from "shared";
 // カード一覧の初期値・localStorage永続化ロジック。Konva版(canvas.tsx)と
 // 同じボードデータを共有できるよう、レンダラーに依存しない部分はboard-storage.tsに切り出している。
+// collectDescendantIds/moveCardTo/insertCardAtPointはKonva版のためにboard-storage.tsへ
+// 切り出した純粋なデータ操作で、DOM版でもそのまま再利用できる。
+// 一方、layoutColumnChildren/getCardWorldPosition/findDropTargetColumn(board-storage.ts)は
+// Column内の子カードの位置をKonva側で「自前計算」するためのものだが、DOM版は子カードを
+// CSS flexboxの通常フロー要素として描画しているためブラウザが位置計算を肩代わりしてくれる。
+// そのため、ドロップ先のColumn判定はこのファイル内でgetBoundingClientRect()を使った
+// 別実装(findDropTargetColumnAtClientPoint)にしている(詳細は同関数のコメント参照)。
 import {
   STORAGE_KEY,
   createNoteCard,
@@ -21,6 +30,9 @@ import {
   createImageCard,
   addStrokeToDrawCard,
   getColumnChildIds,
+  collectDescendantIds,
+  moveCardTo,
+  insertCardAtPoint,
   loadCards,
   NOTE_WIDTH,
   NOTE_PADDING,
@@ -32,6 +44,7 @@ import {
   COLUMN_ROW_GAP,
   DRAW_STROKE_COLOR,
   DRAW_STROKE_WIDTH,
+  type ColumnCard as ColumnCardType,
 } from "./board-storage";
 import { Sidebar, CARD_TYPE_DRAG_MIME } from "./toolbar";
 
@@ -39,11 +52,12 @@ import { Sidebar, CARD_TYPE_DRAG_MIME } from "./toolbar";
 const ZOOM_STEP = 1.05;
 
 type NoteCard = Extract<Card, { type: "note" }>;
-type ColumnCardType = Extract<Card, { type: "column" }>;
+type SwatchCardType = Extract<Card, { type: "swatch" }>;
+type ImageCardType = Extract<Card, { type: "image" }>;
 type DrawCardType = Extract<Card, { type: "draw" }>;
 
 // Note/Columnはコンテンツ量に応じて高さが変わる（Noteはテキストの表示行数、Columnは
-// 中のNote数）。固定値をstyleに書く代わりに、実際にDOMへレンダリングされた高さを
+// 中のカード数）。固定値をstyleに書く代わりに、実際にDOMへレンダリングされた高さを
 // ResizeObserverで測定し、cards配列のheightへ書き戻すためのフック。
 // 「測定→setCards→再描画→再測定」が無限ループにならないよう、直前に測定した高さは
 // refで持ち、変化が無ければsetCardsを呼ばない。
@@ -75,14 +89,16 @@ function useSyncMeasuredHeight(
 }
 
 // Noteカード1枚分の描画。トップレベル（キャンバス上に直接ドラッグ配置されたNote）と、
-// Column内の子Note（縦リストの中の1項目）の両方から呼ばれる。
-// onPointerDownDrag/registerRefが指定されている時だけ「絶対配置＋ドラッグ可能」になり、
-// 未指定（Column内）の時はColumn側のflexレイアウトに従う「通常のブロック要素」として並ぶ。
+// Column内の子カード（縦リストの中の1項目）の両方から呼ばれる。nestedがfalseの間は
+// 絶対配置(left/top=card.x/card.y)、trueの間はColumn側のflexレイアウトに従う
+// 「通常のブロック要素」として並ぶ。どちらの場合もonPointerDownDragは有効で、
+// ネストされたカードも実際に動かせばトップレベルへ昇格する
+// (詳細はSpikeCanvasDom内のhandleCardPointerDown参照)。
 function NoteCardView({
   card,
+  nested,
   isSelected,
   isEditing,
-  onSelect,
   onStartEdit,
   onCommitText,
   onPointerDownDrag,
@@ -90,34 +106,31 @@ function NoteCardView({
   setCards,
 }: {
   card: NoteCard;
+  nested: boolean;
   isSelected: boolean;
   isEditing: boolean;
-  onSelect: () => void;
   onStartEdit: () => void;
   onCommitText: (text: string) => void;
-  onPointerDownDrag?: (e: ReactPointerEvent<HTMLDivElement>) => void;
-  registerRef?: (el: HTMLDivElement | null) => void;
+  onPointerDownDrag: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  registerRef: (el: HTMLDivElement | null) => void;
   setCards: Dispatch<SetStateAction<Card[]>>;
 }) {
   const elRef = useRef<HTMLDivElement>(null);
   // 表示行数(折り返し含む)に応じて高さが伸縮するため、実測値をcards配列に同期する。
   useSyncMeasuredHeight(elRef, card.id, card.height, setCards);
 
-  const draggable = onPointerDownDrag !== undefined;
-
   return (
     <div
       ref={(el) => {
         elRef.current = el;
-        registerRef?.(el);
+        registerRef(el);
       }}
       onPointerDown={onPointerDownDrag}
-      onClick={draggable ? undefined : onSelect}
       onDoubleClick={onStartEdit}
       style={{
-        position: draggable ? "absolute" : "relative",
-        left: draggable ? card.x : undefined,
-        top: draggable ? card.y : undefined,
+        position: nested ? "relative" : "absolute",
+        left: nested ? undefined : card.x,
+        top: nested ? undefined : card.y,
         width: NOTE_WIDTH,
         minHeight: NOTE_MIN_HEIGHT,
         boxSizing: "border-box",
@@ -129,7 +142,7 @@ function NoteCardView({
         borderRadius: 4,
         boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
         outline: isSelected ? "2px solid #3b82f6" : "none",
-        cursor: isEditing ? "text" : draggable ? "grab" : "pointer",
+        cursor: isEditing ? "text" : "grab",
       }}
     >
       {isEditing ? (
@@ -179,44 +192,132 @@ function NoteCardView({
   );
 }
 
+// Swatchカード1枚分の描画。NoteCardViewと同じ絶対配置/フロー配置の切り替えパターン。
+function SwatchCardView({
+  card,
+  nested,
+  isSelected,
+  onPointerDownDrag,
+  registerRef,
+}: {
+  card: SwatchCardType;
+  nested: boolean;
+  isSelected: boolean;
+  onPointerDownDrag: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  registerRef: (el: HTMLDivElement | null) => void;
+}) {
+  return (
+    <div
+      ref={registerRef}
+      onPointerDown={onPointerDownDrag}
+      style={{
+        position: nested ? "relative" : "absolute",
+        left: nested ? undefined : card.x,
+        top: nested ? undefined : card.y,
+        width: card.width,
+        height: card.height,
+        boxSizing: "border-box",
+        background: card.hex,
+        borderRadius: 4,
+        boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+        outline: isSelected ? "2px solid #3b82f6" : "none",
+        cursor: "grab",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: "#ffffff",
+        fontSize: 13,
+      }}
+    >
+      {card.hex}
+    </div>
+  );
+}
+
+// Imageカード1枚分の描画。SwatchCardViewと同じ絶対配置/フロー配置の切り替えパターン。
+function ImageCardView({
+  card,
+  nested,
+  isSelected,
+  onPointerDownDrag,
+  registerRef,
+}: {
+  card: ImageCardType;
+  nested: boolean;
+  isSelected: boolean;
+  onPointerDownDrag: (e: ReactPointerEvent<HTMLDivElement>) => void;
+  registerRef: (el: HTMLDivElement | null) => void;
+}) {
+  return (
+    <div
+      ref={registerRef}
+      onPointerDown={onPointerDownDrag}
+      style={{
+        position: nested ? "relative" : "absolute",
+        left: nested ? undefined : card.x,
+        top: nested ? undefined : card.y,
+        width: card.width,
+        height: card.height,
+        boxSizing: "border-box",
+        borderRadius: 4,
+        // 画像自体をwidth/height 100%で敷き詰めた上でoverflow: hiddenにすることで、
+        // borderRadiusの丸みから画像の角がはみ出さないようにする。
+        overflow: "hidden",
+        boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+        outline: isSelected ? "2px solid #3b82f6" : "none",
+        cursor: "grab",
+      }}
+    >
+      <img
+        src={card.src}
+        alt={card.caption ?? ""}
+        draggable={false}
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          display: "block",
+        }}
+      />
+    </div>
+  );
+}
+
 // Columnカード1枚分の描画。タイトルバー(ドラッグハンドル兼ダブルクリックで編集)と、
-// 縦に並んだ子Noteのリスト、末尾の「+ Note」ボタンで構成する。
-// 子Noteは絶対配置ではなく通常のブロック要素として並べているため、Column自身の高さは
-// (タイトル＋子Noteの合計＋余白)に応じてブラウザが自動計算し、それをuseSyncMeasuredHeightで
+// 縦に並んだ子カードのリスト、末尾の「+ Note」ボタンで構成する。
+// 子カードは絶対配置ではなく通常のブロック要素として並べているため、Column自身の高さは
+// (タイトル＋子カードの合計＋余白)に応じてブラウザが自動計算し、それをuseSyncMeasuredHeightで
 // cards配列に書き戻している。
+// 子カードの実際の描画はrenderChildに委譲する。子がColumn(ネストしたColumn)の場合、
+// renderChildは自分自身(ColumnCardView)を再度返すため、Column in Columnが何段ネストしていても
+// 同じ仕組みで描画できる(呼び出し元はSpikeCanvasDom内のrenderCardDom参照)。
 function ColumnCardView({
   card,
   children,
   isSelected,
   editingTitle,
-  editingNoteId,
-  selectedId,
+  nested,
   onSelectColumn,
   onStartEditTitle,
   onCommitTitle,
   onDragHeaderPointerDown,
   registerRef,
   onAddNote,
-  onSelectNote,
-  onStartEditNote,
-  onCommitNoteText,
+  renderChild,
   setCards,
 }: {
   card: ColumnCardType;
-  children: NoteCard[];
+  children: Card[];
   isSelected: boolean;
   editingTitle: boolean;
-  editingNoteId: string | null;
-  selectedId: string | null;
+  nested: boolean;
   onSelectColumn: () => void;
   onStartEditTitle: () => void;
   onCommitTitle: (title: string) => void;
   onDragHeaderPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void;
   registerRef: (el: HTMLDivElement | null) => void;
   onAddNote: () => void;
-  onSelectNote: (id: string) => void;
-  onStartEditNote: (id: string) => void;
-  onCommitNoteText: (id: string, text: string) => void;
+  renderChild: (child: Card) => ReactNode;
   setCards: Dispatch<SetStateAction<Card[]>>;
 }) {
   const elRef = useRef<HTMLDivElement>(null);
@@ -229,9 +330,9 @@ function ColumnCardView({
         registerRef(el);
       }}
       style={{
-        position: "absolute",
-        left: card.x,
-        top: card.y,
+        position: nested ? "relative" : "absolute",
+        left: nested ? undefined : card.x,
+        top: nested ? undefined : card.y,
         width: COLUMN_WIDTH,
         boxSizing: "border-box",
         display: "flex",
@@ -288,18 +389,7 @@ function ColumnCardView({
           padding: COLUMN_PADDING,
         }}
       >
-        {children.map((note) => (
-          <NoteCardView
-            key={note.id}
-            card={note}
-            isSelected={selectedId === note.id}
-            isEditing={editingNoteId === note.id}
-            onSelect={() => onSelectNote(note.id)}
-            onStartEdit={() => onStartEditNote(note.id)}
-            onCommitText={(text) => onCommitNoteText(note.id, text)}
-            setCards={setCards}
-          />
-        ))}
+        {children.map((child) => renderChild(child))}
         <button
           type="button"
           onClick={onAddNote}
@@ -326,11 +416,13 @@ function ColumnCardView({
 // (カードのleft/topが動けば、中身のSVGごと一緒に動く)。
 function DrawCardView({
   card,
+  nested,
   isSelected,
   onPointerDownDrag,
   registerRef,
 }: {
   card: DrawCardType;
+  nested: boolean;
   isSelected: boolean;
   onPointerDownDrag: (e: ReactPointerEvent<HTMLDivElement>) => void;
   registerRef: (el: HTMLDivElement | null) => void;
@@ -340,9 +432,9 @@ function DrawCardView({
       ref={registerRef}
       onPointerDown={onPointerDownDrag}
       style={{
-        position: "absolute",
-        left: card.x,
-        top: card.y,
+        position: nested ? "relative" : "absolute",
+        left: nested ? undefined : card.x,
+        top: nested ? undefined : card.y,
         width: card.width,
         height: card.height,
         outline: isSelected ? "2px solid #3b82f6" : "none",
@@ -370,6 +462,46 @@ function DrawCardView({
   );
 }
 
+// あるスクリーン座標(clientX/clientY)の点を受け止められるColumnのDOM要素を探す。
+// cardRefsに登録済みの実DOM要素のgetBoundingClientRect()をそのまま使うため、Konva版の
+// findDropTargetColumn(board-storage.ts)のようにレイアウトを自前で再計算する必要が無い
+// (ブラウザがすでに計算した位置・大きさをそのまま信頼できる)。
+// excludeCardIdとその子孫(excludeCardIdがColumnの場合)は候補から除外し、
+// 自己ネスト・循環ネストを防ぐ。複数のColumnの領域が重なる(ネストしたColumnの内側など)
+// 場合は、最も面積が小さい＝最も内側のColumnを優先する。
+// なお、getBoundingClientRect()はドラッグ中に書き換えたstyle.left/topを反映した最新の
+// レイアウトを読むため、直前に他要素のstyleを書き換えているとブラウザが強制的にレイアウトを
+// 再計算する(forced reflow)。カード数が多い場合はコストになりうるが、spikeの規模では未検証。
+function findDropTargetColumnAtClientPoint(
+  clientX: number,
+  clientY: number,
+  cards: Card[],
+  cardRefs: Map<string, HTMLDivElement>,
+  excludeCardId: string,
+): ColumnCardType | null {
+  const excluded = new Set([
+    excludeCardId,
+    ...collectDescendantIds(excludeCardId, cards),
+  ]);
+  let best: { column: ColumnCardType; area: number } | null = null;
+  for (const card of cards) {
+    if (card.type !== "column" || excluded.has(card.id)) continue;
+    const el = cardRefs.get(card.id);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (
+      clientX < rect.left ||
+      clientX > rect.right ||
+      clientY < rect.top ||
+      clientY > rect.bottom
+    )
+      continue;
+    const area = rect.width * rect.height;
+    if (!best || area < best.area) best = { column: card, area };
+  }
+  return best?.column ?? null;
+}
+
 // canvas.tsx(Konva版)と同じ機能を、Konvaを使わずdiv + CSS transformだけで実装したもの。
 // KONVA_VS_DOM.mdで比較した「自前実装(DOM)の場合」のコード例を、実際に動く形にしたもの。
 // カードの状態(配列)とキャンバスの見た目(拡大率・位置)をすべてReactのuseStateで持つ設計は
@@ -381,6 +513,9 @@ export function SpikeCanvasDom() {
   // パン・ズームのtransformを適用する、カードたちの親要素(Konvaの Stage 相当)。
   const worldRef = useRef<HTMLDivElement>(null);
   // カードごとの実DOM要素。ドラッグ中にReactのstateを介さず直接styleを書き換えるために保持する。
+  // トップレベルかColumnに何段ネストしているかを問わず、全カードがここに登録される
+  // (ネストしたカードもドラッグで取り出せるようにするため。詳細はrenderCardDom/
+  // handleCardPointerDown参照)。
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   // Draw用: 描画中のストロークをライブプレビューするpolyline要素。
   const previewPolylineRef = useRef<SVGPolylineElement>(null);
@@ -431,14 +566,15 @@ export function SpikeCanvasDom() {
       if (editingId !== null) return;
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
         setCards((prev) => {
-          const target = prev.find((c) => c.id === selectedId);
-          // Columnを削除する時は、中の子Noteも一緒に削除する
-          // (Columnのcards配列上のエントリだけ消すと、子Noteがトップレベルの孤児として
+          // Columnを削除する時は、中の子カードも一緒に削除する
+          // (Columnのcards配列上のエントリだけ消すと、子カードがトップレベルの孤児として
           // 復活して見えてしまうため)。
-          const idsToRemove = new Set([selectedId]);
-          if (target?.type === "column") {
-            for (const childId of target.cardIds) idsToRemove.add(childId);
-          }
+          // collectDescendantIdsはColumnの子・孫...と何段ネストしていても再帰的に集めてくれる
+          // (selectedIdがColumnでなければ空集合を返すので、Note等の削除では従来どおり1件だけ消える)。
+          const idsToRemove = new Set([
+            selectedId,
+            ...collectDescendantIds(selectedId, prev),
+          ]);
           return prev
             .filter((c) => !idsToRemove.has(c.id))
             .map((c) =>
@@ -572,7 +708,8 @@ export function SpikeCanvasDom() {
           x: center.x - placeholder.width / 2,
           y: center.y - placeholder.height / 2,
         };
-        setCards((prev) => [...prev, newCard]);
+        // centerが既存Columnの領域内なら、トップレベルではなくそのColumnの子として追加する。
+        setCards((prev) => insertCardAtPoint(prev, newCard, center));
         setSelectedId(newCard.id);
       };
       img.src = src;
@@ -623,7 +760,8 @@ export function SpikeCanvasDom() {
       cardType === "note"
         ? createNoteCard(pos.x, pos.y)
         : createColumnCard(pos.x, pos.y);
-    setCards((prev) => [...prev, newCard]);
+    // ドロップ位置が既存Columnの領域内なら、トップレベルではなくそのColumnの子として追加する。
+    setCards((prev) => insertCardAtPoint(prev, newCard, pos));
     setSelectedId(newCard.id);
   };
 
@@ -720,7 +858,8 @@ export function SpikeCanvasDom() {
   // cards.map(...)での全カード分の要素再生成・reconcileが走ってしまう。
   // それを避けるため、ドラッグ中はcardRefsから取得した実DOM要素のstyle.left/topを直接書き換え、
   // pointerupで指を離した瞬間に初めてsetCardsでReactのstateへ反映する。
-  // note/swatch/column(タイトルバー)/draw/imageの全カード種別で共通して使う。
+  // note/swatch/column(タイトルバー)/draw/imageの全カード種別、トップレベル/ネスト問わず
+  // 共通で使う。
   const handleCardPointerDown = (
     e: React.PointerEvent<HTMLDivElement>,
     card: Card,
@@ -730,12 +869,47 @@ export function SpikeCanvasDom() {
 
     const startX = e.clientX;
     const startY = e.clientY;
-    const origin = { x: card.x, y: card.y };
-    const el = cardRefs.current.get(card.id);
+    // ネストされたカードのcard.x/card.yはColumn内では使われない値(0や作成時の位置のまま)の
+    // ため、そのままドラッグのorigin(基準位置)にはできない。実際に動いた瞬間(最初のonMove)に、
+    // その時点の画面上の実位置から逆算したワールド座標でColumnの子から抜けさせ
+    // (下記のpromoted分岐)、以降は元からトップレベルだったカードと同じ扱いで追跡する。
+    // 単純なクリック(pointerdownの直後にpointerupが来て、一度もonMoveが発火しない)場合は
+    // この昇格処理自体が走らないため、クリックしただけで意図せずColumnの外に出ることはない。
+    let origin = { x: card.x, y: card.y };
+    let el = cardRefs.current.get(card.id);
+    let promoted = !columnChildIds.has(card.id);
     // 実際に動いたかどうか。動いていなければ「クリックによる選択」だけで終わらせる。
     let moved = false;
+    // ドラッグ中、ポインタの下にある入れ子先候補のColumnのid。dragmoveのたびにReactの
+    // stateを介さず、対象のColumn要素のoutlineを直接書き換えてハイライトする
+    // (Konva版のdropTargetId stateに相当する見た目だが、pointermoveごとのsetStateを
+    // 避けるこのファイルの方針(KONVA_VS_DOM.md「2. ドラッグ」参照)に合わせ、DOM直書きにしている)。
+    let highlightedTargetId: string | null = null;
+    const clearHighlight = () => {
+      if (!highlightedTargetId) return;
+      const targetEl = cardRefs.current.get(highlightedTargetId);
+      if (targetEl) {
+        targetEl.style.outline =
+          selectedId === highlightedTargetId ? "2px solid #3b82f6" : "none";
+      }
+      highlightedTargetId = null;
+    };
 
     const onMove = (ev: PointerEvent) => {
+      if (!promoted) {
+        // 昇格前の実際の画面位置(Columnのflexレイアウトが決めた位置)をワールド座標に変換し、
+        // その位置を保ったままトップレベルのカードとして確定する(視覚的なジャンプを防ぐ)。
+        // setCardsをflushSyncで包んで同期的に完了させないと、直後のcardRefs.current.get(card.id)が
+        // まだColumn内の(まもなくアンマウントされる)DOM要素を指したままになってしまう。
+        const currentEl = cardRefs.current.get(card.id);
+        const rect = currentEl?.getBoundingClientRect();
+        origin = rect ? toWorldPos(rect.left, rect.top) : origin;
+        flushSync(() => {
+          setCards((prev) => moveCardTo(prev, card.id, { worldPos: origin }));
+        });
+        el = cardRefs.current.get(card.id);
+        promoted = true;
+      }
       moved = true;
       // スクリーン座標の移動量をscaleで割り、ワールド座標系での移動量に変換する。
       // ズームしている状態だと、画面上の1pxの移動がワールド座標では1px未満/以上になるため。
@@ -745,29 +919,164 @@ export function SpikeCanvasDom() {
         el.style.left = `${origin.x + dx}px`;
         el.style.top = `${origin.y + dy}px`;
       }
+      const target = findDropTargetColumnAtClientPoint(
+        ev.clientX,
+        ev.clientY,
+        cards,
+        cardRefs.current,
+        card.id,
+      );
+      if (target?.id !== highlightedTargetId) {
+        clearHighlight();
+        highlightedTargetId = target?.id ?? null;
+        if (highlightedTargetId) {
+          const targetEl = cardRefs.current.get(highlightedTargetId);
+          if (targetEl) targetEl.style.outline = "2px solid #22c55e";
+        }
+      }
     };
     const onUp = (ev: PointerEvent) => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      clearHighlight();
       if (moved) {
-        // ドラッグ終了時、動いた先の座標をcards配列に反映する。
-        // 対象カードのみをmapで新しいオブジェクトに差し替え、他のカードはそのまま残す
-        // (Reactのstateを直接書き換えないための定型パターン)。
+        // ドラッグ終了時、動いた先が既存Columnの領域内ならそのColumnの子として
+        // ネストし、そうでなければ動いた先の座標をそのままcards配列に反映する。
         const dx = (ev.clientX - startX) / scale;
         const dy = (ev.clientY - startY) / scale;
-        setCards((prev) =>
-          prev.map((c) =>
-            c.id === card.id ? { ...c, x: origin.x + dx, y: origin.y + dy } : c,
-          ),
-        );
+        const worldPos = { x: origin.x + dx, y: origin.y + dy };
+        setCards((prev) => {
+          const target = findDropTargetColumnAtClientPoint(
+            ev.clientX,
+            ev.clientY,
+            prev,
+            cardRefs.current,
+            card.id,
+          );
+          return moveCardTo(
+            prev,
+            card.id,
+            target ? { columnId: target.id } : { worldPos },
+          );
+        });
       }
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
   };
 
-  // あるColumnの中に入っている(＝トップレベルでは描画しない)Noteのid一覧。
+  // あるColumnの中に入っている(＝トップレベルでは描画しない)カードのid一覧。
   const columnChildIds = getColumnChildIds(cards);
+
+  // カード1件分の描画。トップレベル(nested=false、絶対配置)と、Column内の子カード
+  // (nested=true、flexフローに従う通常要素)の両方から呼べる共通関数にすることで、
+  // Note/Swatch/Image/Draw/Columnどの種類のカードも「トップレベルかColumnの中か」
+  // 「Columnの中なら何段ネストしているか」を問わず描画できる。Columnの中でrenderCardDomを
+  // 再帰呼び出しすることで、Column in Columnの無制限ネストに対応している。
+  // nestedの値に関わらずonPointerDownDrag/registerRefは常に有効にしている。ネストされた
+  // カードも実際にドラッグで動かせば、handleCardPointerDown内でトップレベルへ昇格する
+  // (見た目(position: relative/absolute)の切り替えだけがnestedの役割で、ドラッグの可否には
+  // 影響しない)。
+  const renderCardDom = (card: Card, nested: boolean): ReactNode => {
+    const registerRef = (el: HTMLDivElement | null) => {
+      if (el) cardRefs.current.set(card.id, el);
+      else cardRefs.current.delete(card.id);
+    };
+    const onPointerDownDrag = (e: ReactPointerEvent<HTMLDivElement>) =>
+      handleCardPointerDown(e, card);
+
+    if (card.type === "note") {
+      return (
+        <NoteCardView
+          key={card.id}
+          card={card}
+          nested={nested}
+          isSelected={selectedId === card.id}
+          isEditing={editingId === card.id}
+          onStartEdit={() => setEditingId(card.id)}
+          onCommitText={(text) => {
+            setCards((prev) =>
+              prev.map((c) => (c.id === card.id ? { ...c, text } : c)),
+            );
+            setEditingId(null);
+          }}
+          onPointerDownDrag={onPointerDownDrag}
+          registerRef={registerRef}
+          setCards={setCards}
+        />
+      );
+    }
+
+    if (card.type === "swatch") {
+      return (
+        <SwatchCardView
+          key={card.id}
+          card={card}
+          nested={nested}
+          isSelected={selectedId === card.id}
+          onPointerDownDrag={onPointerDownDrag}
+          registerRef={registerRef}
+        />
+      );
+    }
+
+    if (card.type === "image") {
+      return (
+        <ImageCardView
+          key={card.id}
+          card={card}
+          nested={nested}
+          isSelected={selectedId === card.id}
+          onPointerDownDrag={onPointerDownDrag}
+          registerRef={registerRef}
+        />
+      );
+    }
+
+    if (card.type === "draw") {
+      return (
+        <DrawCardView
+          key={card.id}
+          card={card}
+          nested={nested}
+          isSelected={selectedId === card.id}
+          onPointerDownDrag={onPointerDownDrag}
+          registerRef={registerRef}
+        />
+      );
+    }
+
+    if (card.type === "column") {
+      const children = card.cardIds
+        .map((id) => cards.find((c) => c.id === id))
+        .filter((c): c is Card => !!c);
+      return (
+        <ColumnCardView
+          key={card.id}
+          card={card}
+          children={children}
+          nested={nested}
+          isSelected={selectedId === card.id}
+          editingTitle={editingId === card.id}
+          onSelectColumn={() => setSelectedId(card.id)}
+          onStartEditTitle={() => setEditingId(card.id)}
+          onCommitTitle={(title) => {
+            setCards((prev) =>
+              prev.map((c) => (c.id === card.id ? { ...c, title } : c)),
+            );
+            setEditingId(null);
+          }}
+          onDragHeaderPointerDown={onPointerDownDrag}
+          registerRef={registerRef}
+          onAddNote={() => handleAddNoteToColumn(card.id)}
+          renderChild={(child) => renderCardDom(child, true)}
+          setCards={setCards}
+        />
+      );
+    }
+
+    return null;
+  };
 
   return (
     <>
@@ -810,170 +1119,12 @@ export function SpikeCanvasDom() {
             transform: `translate(${stagePos.x}px, ${stagePos.y}px) scale(${scale})`,
           }}
         >
-          {/* cardsを1件ずつ描画する。Columnに属するNote(columnChildIdsに含まれるid)は
-              トップレベルでは描画せず、ColumnCardView側で描画する。 */}
-          {cards.map((card) => {
-            if (columnChildIds.has(card.id)) return null;
-
-            if (card.type === "note") {
-              return (
-                <NoteCardView
-                  key={card.id}
-                  card={card}
-                  isSelected={selectedId === card.id}
-                  isEditing={editingId === card.id}
-                  onSelect={() => setSelectedId(card.id)}
-                  onStartEdit={() => setEditingId(card.id)}
-                  onCommitText={(text) => {
-                    setCards((prev) =>
-                      prev.map((c) => (c.id === card.id ? { ...c, text } : c)),
-                    );
-                    setEditingId(null);
-                  }}
-                  onPointerDownDrag={(e) => handleCardPointerDown(e, card)}
-                  registerRef={(el) => {
-                    if (el) cardRefs.current.set(card.id, el);
-                    else cardRefs.current.delete(card.id);
-                  }}
-                  setCards={setCards}
-                />
-              );
-            }
-
-            if (card.type === "swatch") {
-              return (
-                <div
-                  key={card.id}
-                  ref={(el) => {
-                    if (el) cardRefs.current.set(card.id, el);
-                    else cardRefs.current.delete(card.id);
-                  }}
-                  onPointerDown={(e) => handleCardPointerDown(e, card)}
-                  style={{
-                    position: "absolute",
-                    left: card.x,
-                    top: card.y,
-                    width: card.width,
-                    height: card.height,
-                    boxSizing: "border-box",
-                    background: card.hex,
-                    borderRadius: 4,
-                    boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
-                    outline:
-                      selectedId === card.id ? "2px solid #3b82f6" : "none",
-                    cursor: "grab",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: "#ffffff",
-                    fontSize: 13,
-                  }}
-                >
-                  {card.hex}
-                </div>
-              );
-            }
-
-            if (card.type === "image") {
-              return (
-                <div
-                  key={card.id}
-                  ref={(el) => {
-                    if (el) cardRefs.current.set(card.id, el);
-                    else cardRefs.current.delete(card.id);
-                  }}
-                  onPointerDown={(e) => handleCardPointerDown(e, card)}
-                  style={{
-                    position: "absolute",
-                    left: card.x,
-                    top: card.y,
-                    width: card.width,
-                    height: card.height,
-                    boxSizing: "border-box",
-                    borderRadius: 4,
-                    // 画像自体をwidth/height 100%で敷き詰めた上でoverflow: hiddenにすることで、
-                    // borderRadiusの丸みから画像の角がはみ出さないようにする。
-                    overflow: "hidden",
-                    boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
-                    outline:
-                      selectedId === card.id ? "2px solid #3b82f6" : "none",
-                    cursor: "grab",
-                  }}
-                >
-                  <img
-                    src={card.src}
-                    alt={card.caption ?? ""}
-                    draggable={false}
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "cover",
-                      display: "block",
-                    }}
-                  />
-                </div>
-              );
-            }
-
-            if (card.type === "column") {
-              const children = card.cardIds
-                .map((id) => cards.find((c) => c.id === id))
-                .filter((c): c is NoteCard => !!c && c.type === "note");
-              return (
-                <ColumnCardView
-                  key={card.id}
-                  card={card}
-                  children={children}
-                  isSelected={selectedId === card.id}
-                  editingTitle={editingId === card.id}
-                  editingNoteId={editingId}
-                  selectedId={selectedId}
-                  onSelectColumn={() => setSelectedId(card.id)}
-                  onStartEditTitle={() => setEditingId(card.id)}
-                  onCommitTitle={(title) => {
-                    setCards((prev) =>
-                      prev.map((c) => (c.id === card.id ? { ...c, title } : c)),
-                    );
-                    setEditingId(null);
-                  }}
-                  onDragHeaderPointerDown={(e) =>
-                    handleCardPointerDown(e, card)
-                  }
-                  registerRef={(el) => {
-                    if (el) cardRefs.current.set(card.id, el);
-                    else cardRefs.current.delete(card.id);
-                  }}
-                  onAddNote={() => handleAddNoteToColumn(card.id)}
-                  onSelectNote={(id) => setSelectedId(id)}
-                  onStartEditNote={(id) => setEditingId(id)}
-                  onCommitNoteText={(id, text) => {
-                    setCards((prev) =>
-                      prev.map((c) => (c.id === id ? { ...c, text } : c)),
-                    );
-                    setEditingId(null);
-                  }}
-                  setCards={setCards}
-                />
-              );
-            }
-
-            if (card.type === "draw") {
-              return (
-                <DrawCardView
-                  key={card.id}
-                  card={card}
-                  isSelected={selectedId === card.id}
-                  onPointerDownDrag={(e) => handleCardPointerDown(e, card)}
-                  registerRef={(el) => {
-                    if (el) cardRefs.current.set(card.id, el);
-                    else cardRefs.current.delete(card.id);
-                  }}
-                />
-              );
-            }
-
-            return null;
-          })}
+          {/* cardsを1件ずつ描画する。Columnに属するカード(columnChildIdsに含まれるid)は
+              トップレベルでは描画せず、Column自身の描画の中(renderCardDomの再帰呼び出し)で
+              描画する。 */}
+          {cards.map((card) =>
+            columnChildIds.has(card.id) ? null : renderCardDom(card, false),
+          )}
 
           {/* ペンモード中、描き途中のストロークをライブプレビューするための要素。
               ワールド座標系(worldRefの子)にそのまま置くことで、パン・ズームと一緒に

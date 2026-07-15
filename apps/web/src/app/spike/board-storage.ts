@@ -18,13 +18,16 @@ export const NOTE_FONT_SIZE = 14;
 export const NOTE_LINE_HEIGHT = 20;
 export const NOTE_MIN_HEIGHT = NOTE_LINE_HEIGHT + NOTE_PADDING * 2;
 
-// Columnカードの見た目に関する定数。中に入れたNoteは縦リストで並べ、
-// Note数に応じてColumn自体の高さを自動計算する（実際の計算は各canvasコンポーネント側で行う。
-// ここでは両レンダラーで揃えるためのレイアウト値のみ定義する）。
+// Columnカードの見た目に関する定数。中に入れたカードは縦リストで並べ、
+// 子カードの量に応じてColumn自体の高さを自動計算する（実際の計算はlayoutColumnChildren、
+// 描画は各canvasコンポーネント側で行う。ここでは両レンダラーで揃えるためのレイアウト値のみ定義する）。
 export const COLUMN_WIDTH = 260;
 export const COLUMN_TITLE_HEIGHT = 40;
 export const COLUMN_PADDING = 12;
 export const COLUMN_ROW_GAP = 8;
+// Column内の「+ Note」ボタンの高さ。layoutColumnChildrenがaddButtonYの算出に使うため、
+// レイアウト計算そのものと同じ場所（レンダラー非依存側）に置く。
+export const ADD_BUTTON_HEIGHT = 28;
 
 // Drawカードのペン設定。
 export const DRAW_STROKE_COLOR = "#1f2937";
@@ -154,7 +157,10 @@ export function createImageCard(
   };
 }
 
-// あるColumnの中に入っている（＝トップレベルでは描画しない）Noteのidを全Column分集める。
+// あるColumnの中に入っている（＝トップレベルでは描画しない）カードのidを全Column分集める。
+// Column自身が別のColumnの中に入っている場合も、cardsに含まれる全Columnを見るため
+// 再帰しなくても孫以降のidまで自然に集まる（cardsはネストの深さに関係なくフラットな配列で、
+// 親子関係はcardIdsによる参照だけで表現しているため）。
 // cards.map(...)でカードを1件ずつ描画するcanvas.tsx / canvas-dom.tsxの両方で、
 // 「Columnに属するカードはColumnの中でだけ描画する」という条件分岐に使う。
 export function getColumnChildIds(cards: Card[]): Set<string> {
@@ -167,7 +173,169 @@ export function getColumnChildIds(cards: Card[]): Set<string> {
   return ids;
 }
 
+export type ColumnCard = Extract<Card, { type: "column" }>;
 type DrawCard = Extract<Card, { type: "draw" }>;
+
+// Columnの子カード1件が縦方向に占める高さ。子がColumn（ネストしたColumn）の場合は、
+// そのColumn自身の子カードの量に応じて高さが変わるため、layoutColumnChildrenを再帰的に
+// 呼んでtotalHeightを求める。
+function measureCardHeight(card: Card, cards: Card[]): number {
+  if (card.type === "column")
+    return layoutColumnChildren(card, cards).totalHeight;
+  return card.height;
+}
+
+// Column内の子カード（Note/Image/Swatch/Draw/Column、種類は問わない）を縦に並べるための
+// レイアウト計算。DOM版(canvas-dom.tsx)はCSSのflexが自動でやってくれるが、Konvaには
+// 自動レイアウト機能が無いため、各子カードの高さ（Columnなら再帰的に計算したtotalHeight、
+// それ以外はcard.height）を上から順に積み上げて自前で位置を計算する。
+// canvas.tsxではこの計算結果を「Column内の子カードを描画する処理」と「編集用
+// textarea/inputオーバーレイの位置計算(getCardWorldPosition)」の両方から参照する。
+export function layoutColumnChildren(column: ColumnCard, cards: Card[]) {
+  const children = column.cardIds
+    .map((id) => cards.find((c) => c.id === id))
+    .filter((c): c is Card => !!c);
+  let cursorY = COLUMN_TITLE_HEIGHT + COLUMN_PADDING;
+  const items = children.map((child) => {
+    const item = { child, x: COLUMN_PADDING, y: cursorY };
+    cursorY += measureCardHeight(child, cards) + COLUMN_ROW_GAP;
+    return item;
+  });
+  return {
+    items,
+    addButtonY: cursorY,
+    totalHeight: cursorY + ADD_BUTTON_HEIGHT + COLUMN_PADDING,
+  };
+}
+
+// あるカードが実際にキャンバス上のどのワールド座標に描画されているかを求める。
+// トップレベルのカードは自身のx, yをそのまま使えるが、Columnの子カードは自身のx, yを使わず
+// （layoutColumnChildrenが計算した相対位置を使う）、かつ親のColumn自体がさらに別のColumnの
+// 子である場合もあるため、親をたどりながら再帰的に解決する。
+export function getCardWorldPosition(
+  cardId: string,
+  cards: Card[],
+): { x: number; y: number } | null {
+  const card = cards.find((c) => c.id === cardId);
+  if (!card) return null;
+  const parent = cards.find(
+    (c): c is ColumnCard => c.type === "column" && c.cardIds.includes(cardId),
+  );
+  if (!parent) return { x: card.x, y: card.y };
+  const parentPos = getCardWorldPosition(parent.id, cards);
+  if (!parentPos) return { x: card.x, y: card.y };
+  const item = layoutColumnChildren(parent, cards).items.find(
+    (i) => i.child.id === cardId,
+  );
+  return item
+    ? { x: parentPos.x + item.x, y: parentPos.y + item.y }
+    : parentPos;
+}
+
+// columnIdを起点に、子Column→孫Column…とcardIdsをたどれる全ての子孫カードidを集める。
+// 用途は2つ：
+// 1. Columnを削除する時、子・孫以降のカードも一緒に削除する（カスケード削除）
+// 2. あるColumnを別のColumnへドラッグでネストする時、そのColumn自身や子孫Columnへは
+//    ネストできないようにする（自己参照・循環参照の防止）
+export function collectDescendantIds(
+  columnId: string,
+  cards: Card[],
+): Set<string> {
+  const result = new Set<string>();
+  const stack = [columnId];
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (id === undefined) continue;
+    const column = cards.find(
+      (c): c is ColumnCard => c.id === id && c.type === "column",
+    );
+    if (!column) continue;
+    for (const childId of column.cardIds) {
+      if (!result.has(childId)) {
+        result.add(childId);
+        stack.push(childId);
+      }
+    }
+  }
+  return result;
+}
+
+// あるワールド座標の点を受け止められるColumnを探す。excludeCardIdとその子孫
+// （excludeCardId自身がColumnの場合）は候補から除外し、自己ネスト・循環ネストを防ぐ。
+// 新規カードをドロップ位置に配置する場合はexcludeCardIdにまだcardsへ含まれていない
+// idを渡せばよく（該当Columンが無いので除外は実質発生しない）、既存カードを
+// ドラッグして再ネストする場合はそのカード自身のidを渡す。
+// 複数のColumnの領域が重なる（ネストしたColumnの内側など）場合は、最も面積が小さい
+// ＝最も内側のColumnを優先する。
+export function findDropTargetColumn(
+  point: { x: number; y: number },
+  excludeCardId: string,
+  cards: Card[],
+): ColumnCard | null {
+  const excluded = new Set([
+    excludeCardId,
+    ...collectDescendantIds(excludeCardId, cards),
+  ]);
+  let best: { column: ColumnCard; area: number } | null = null;
+  for (const card of cards) {
+    if (card.type !== "column" || excluded.has(card.id)) continue;
+    const pos = getCardWorldPosition(card.id, cards);
+    if (!pos) continue;
+    const { totalHeight } = layoutColumnChildren(card, cards);
+    const withinX = point.x >= pos.x && point.x <= pos.x + COLUMN_WIDTH;
+    const withinY = point.y >= pos.y && point.y <= pos.y + totalHeight;
+    if (!withinX || !withinY) continue;
+    const area = COLUMN_WIDTH * totalHeight;
+    if (!best || area < best.area) best = { column: card, area };
+  }
+  return best?.column ?? null;
+}
+
+// 既存カードcardIdを、ドラッグ操作の結果に応じて移動する。
+// - target.columnId: 現在の親Column（あれば）から外し、指定Columnのcardidsへ追加する。
+// - target.worldPos: 現在の親Column（あれば）から外し、トップレベルのカードとして
+//   worldPosの位置に置く（すでにトップレベルだった場合は単なる位置更新になる）。
+export function moveCardTo(
+  cards: Card[],
+  cardId: string,
+  target: { columnId: string } | { worldPos: { x: number; y: number } },
+): Card[] {
+  const detached = cards.map((c) =>
+    c.type === "column" && c.cardIds.includes(cardId)
+      ? { ...c, cardIds: c.cardIds.filter((id) => id !== cardId) }
+      : c,
+  );
+  if ("columnId" in target) {
+    return detached.map((c) =>
+      c.id === target.columnId && c.type === "column"
+        ? { ...c, cardIds: [...c.cardIds, cardId] }
+        : c,
+    );
+  }
+  return detached.map((c) =>
+    c.id === cardId ? { ...c, x: target.worldPos.x, y: target.worldPos.y } : c,
+  );
+}
+
+// 新規カードnewCardをワールド座標pointに配置する。pointが既存Columnの領域内であれば、
+// トップレベルには追加せずそのColumnの子として追加する（サイドバーからのドラッグ&ドロップ、
+// および画像ファイルのドロップの両方で使う）。
+export function insertCardAtPoint(
+  cards: Card[],
+  newCard: Card,
+  point: { x: number; y: number },
+): Card[] {
+  const target = findDropTargetColumn(point, newCard.id, cards);
+  if (!target) return [...cards, newCard];
+  return [
+    ...cards.map((c) =>
+      c.id === target.id && c.type === "column"
+        ? { ...c, cardIds: [...c.cardIds, newCard.id] }
+        : c,
+    ),
+    newCard,
+  ];
+}
 
 // Drawカードに新しいストロークを1本追加する。
 // strokesはカードのx, yを原点とした相対座標で保持しているため、

@@ -3,7 +3,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { DragEvent } from "react";
+import type { DragEvent, ReactNode } from "react";
 // react-konva: KonvaというCanvas描画ライブラリをReactのコンポーネントとして使えるようにするラッパー。
 // Stage = 描画領域全体（<canvas>要素そのものに相当）
 // Layer = Stage内の描画レイヤー（複数重ねられる。今回は1枚だけ使用）
@@ -26,6 +26,10 @@ import Konva from "konva";
 import type { Card } from "shared";
 // カード一覧の初期値・localStorage永続化ロジック。DOM自前実装版(canvas-dom.tsx)と
 // 同じボードデータを共有できるよう、レンダラーに依存しない部分は board-storage.ts に切り出している。
+// レイアウト計算(layoutColumnChildren)・ワールド座標解決(getCardWorldPosition)・
+// カードの再ネスト(moveCardTo/insertCardAtPoint)・循環参照防止(collectDescendantIds)も、
+// Konvaに依存しない純粋なデータ操作としてboard-storage.ts側に置き、canvas-dom.tsx側からも
+// 将来再利用できるようにしている。
 import {
   STORAGE_KEY,
   createNoteCard,
@@ -35,6 +39,12 @@ import {
   addStrokeToDrawCard,
   getColumnChildIds,
   loadCards,
+  layoutColumnChildren,
+  getCardWorldPosition,
+  collectDescendantIds,
+  findDropTargetColumn,
+  moveCardTo,
+  insertCardAtPoint,
   NOTE_WIDTH,
   NOTE_PADDING,
   NOTE_FONT_SIZE,
@@ -43,83 +53,45 @@ import {
   COLUMN_WIDTH,
   COLUMN_TITLE_HEIGHT,
   COLUMN_PADDING,
-  COLUMN_ROW_GAP,
+  ADD_BUTTON_HEIGHT,
   DRAW_STROKE_COLOR,
   DRAW_STROKE_WIDTH,
 } from "./board-storage";
 import { Sidebar, CARD_TYPE_DRAG_MIME } from "./toolbar";
 
-type NoteCard = Extract<Card, { type: "note" }>;
-type ColumnCardType = Extract<Card, { type: "column" }>;
 type DrawCardType = Extract<Card, { type: "draw" }>;
 type ImageCardType = Extract<Card, { type: "image" }>;
 
-// Column内の「+ Note」ボタンの高さ。
-const ADD_BUTTON_HEIGHT = 28;
-
-// Column内の子Noteを縦に並べるためのレイアウト計算。
-// DOM版(canvas-dom.tsx)はCSSのflexが自動でやってくれるが、Konvaには自動レイアウト機能が無いため、
-// 各Noteの高さ(state上のcard.height)を上から順に積み上げて自前で位置を計算する。
-// この計算結果は「Column内に子Noteを描画する処理」と「編集用textareaオーバーレイの位置計算
-// (resolveEditingTarget)」の両方から参照するため、共通関数として切り出している。
-function layoutColumnChildren(column: ColumnCardType, cards: Card[]) {
-  const notes = column.cardIds
-    .map((id) => cards.find((c) => c.id === id))
-    .filter((c): c is NoteCard => !!c && c.type === "note");
-  let cursorY = COLUMN_TITLE_HEIGHT + COLUMN_PADDING;
-  const items = notes.map((note) => {
-    const item = { note, x: COLUMN_PADDING, y: cursorY };
-    cursorY += note.height + COLUMN_ROW_GAP;
-    return item;
-  });
-  return {
-    items,
-    addButtonY: cursorY,
-    totalHeight: cursorY + ADD_BUTTON_HEIGHT + COLUMN_PADDING,
-  };
-}
-
 // 現在編集中のカード(editingId)が、キャンバス上のどのワールド座標に表示されているかを求める。
-// トップレベルのNote/Columnタイトルはそれぞれ自身のx, yをそのまま使えるが、Column内の子Noteは
-// 自身のx, yを使わず(layoutColumnChildrenで計算した位置を使う)ため、3パターンをまとめて
-// 解決するヘルパーとして切り出している。戻り値のkindによって、下のJSXでtextarea(Note編集)/
-// input(Columnタイトル編集)のどちらを出すか、どちらのカードのstateを更新するかを分岐する。
+// Note本文はNote自身、Columnタイトルは対象Column自身が編集対象になる。どちらも
+// getCardWorldPosition(board-storage.ts)がColumnのネスト（何段でも）を考慮した
+// 実際の描画位置を返してくれるため、ここでは対象の種別(kind)を判定するだけでよい。
+// 戻り値のkindによって、下のJSXでtextarea(Note編集)/input(Columnタイトル編集)の
+// どちらを出すか、どちらのカードのstateを更新するかを分岐する。
 function resolveEditingTarget(editingId: string | null, cards: Card[]) {
   if (!editingId) return null;
   const direct = cards.find((c) => c.id === editingId);
-  if (direct?.type === "note") {
+  if (!direct) return null;
+  const pos = getCardWorldPosition(editingId, cards);
+  if (!pos) return null;
+  if (direct.type === "note") {
     return {
       kind: "note" as const,
       id: direct.id,
-      x: direct.x,
-      y: direct.y,
+      x: pos.x,
+      y: pos.y,
       width: direct.width,
       text: direct.text,
     };
   }
-  if (direct?.type === "column") {
+  if (direct.type === "column") {
     return {
       kind: "column-title" as const,
       id: direct.id,
-      x: direct.x,
-      y: direct.y,
+      x: pos.x,
+      y: pos.y,
       width: direct.width,
       text: direct.title,
-    };
-  }
-  for (const card of cards) {
-    if (card.type !== "column") continue;
-    if (!card.cardIds.includes(editingId)) continue;
-    const { items } = layoutColumnChildren(card, cards);
-    const item = items.find((i) => i.note.id === editingId);
-    if (!item) continue;
-    return {
-      kind: "note" as const,
-      id: item.note.id,
-      x: card.x + item.x,
-      y: card.y + item.y,
-      width: item.note.width,
-      text: item.note.text,
     };
   }
   return null;
@@ -132,16 +104,20 @@ function resolveEditingTarget(editingId: string | null, cards: Card[]) {
 // 専用コンポーネントに切り出す必要がある)。
 function ImageCardView({
   card,
+  position,
   isSelected,
   isDrawActive,
   onSelect,
+  onDragMove,
   onDragEnd,
 }: {
   card: ImageCardType;
+  position: { x: number; y: number };
   isSelected: boolean;
   isDrawActive: boolean;
   onSelect: () => void;
-  onDragEnd: (x: number, y: number) => void;
+  onDragMove: (node: Konva.Node) => void;
+  onDragEnd: (node: Konva.Node) => void;
 }) {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
 
@@ -156,13 +132,14 @@ function ImageCardView({
 
   return (
     <Group
-      x={card.x}
-      y={card.y}
+      x={position.x}
+      y={position.y}
       draggable={!isDrawActive}
       onClick={() => {
         if (!isDrawActive) onSelect();
       }}
-      onDragEnd={(e) => onDragEnd(e.target.x(), e.target.y())}
+      onDragMove={(e) => onDragMove(e.target)}
+      onDragEnd={(e) => onDragEnd(e.target)}
       onMouseEnter={(e) => {
         const container = e.target.getStage()?.container();
         if (container) container.style.cursor = "grab";
@@ -232,6 +209,10 @@ export function SpikeCanvas() {
   // カードの選択/ドラッグ/編集開始をすべて無効化し、Stage上のどこを押してもストローク
   // 描画が始まるようにする。
   const [isDrawActive, setIsDrawActive] = useState(false);
+  // カードをColumnへドラッグ中、現在ポインタの下にある「入れ子先候補」のColumnのid。
+  // ドロップ前にどのColumnに入るかをハイライト表示するためだけの見た目用stateで、
+  // cards配列そのもの（実際の親子関係）には影響しない。
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   // ウィンドウサイズが変わった時（リサイズ）にStageのサイズも追従させるための副作用。
   useEffect(() => {
@@ -260,13 +241,14 @@ export function SpikeCanvas() {
       if (editingId !== null) return;
       if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
         setCards((prev) => {
-          const target = prev.find((c) => c.id === selectedId);
-          // Columnを削除する時は、中の子Noteも一緒に削除する
-          // (Columnのエントリだけ消すと、子Noteがトップレベルの孤児として復活して見えてしまうため)。
-          const idsToRemove = new Set([selectedId]);
-          if (target?.type === "column") {
-            for (const childId of target.cardIds) idsToRemove.add(childId);
-          }
+          // Columnを削除する時は、中の子カードも一緒に削除する
+          // (Columnのエントリだけ消すと、子カードがトップレベルの孤児として復活して見えてしまうため)。
+          // collectDescendantIdsはColumnの子・孫...と何段ネストしていても再帰的に集めてくれる
+          // (selectedIdがColumnでなければ空集合を返すので、Note等の削除では従来どおり1件だけ消える)。
+          const idsToRemove = new Set([
+            selectedId,
+            ...collectDescendantIds(selectedId, prev),
+          ]);
           return prev
             .filter((c) => !idsToRemove.has(c.id))
             .map((c) =>
@@ -288,7 +270,7 @@ export function SpikeCanvas() {
     // ＝いわゆる「クロージャの罠」）。
   }, [selectedId, editingId, isDrawActive]);
 
-  // Columnに属する(＝トップレベルでは描画しない)Noteのid一覧。
+  // Columnに属する(＝トップレベルでは描画しない)カードのid一覧。
   const columnChildIds = getColumnChildIds(cards);
   // 現在編集中の対象(Note本文 or Columnタイトル)のワールド座標・種別。
   const editingTarget = resolveEditingTarget(editingId, cards);
@@ -301,6 +283,43 @@ export function SpikeCanvas() {
       x: (clientX - rect.left - stagePos.x) / scale,
       y: (clientY - rect.top - stagePos.y) / scale,
     };
+  };
+
+  // ドラッグ中のKonvaノードの現在位置を、cards配列と同じ「ワールド座標」に変換する。
+  // node.getAbsolutePosition()はStage自身のscale/x/yまで含めた画面ピクセル座標を返すため、
+  // Stageのscale/stagePosを逆算して差し引く。Columnの子として何段ネストしていても
+  // (Group内のGroup内のGroup…でも)、Konvaが親子の変換を積算した絶対位置を返してくれるので、
+  // ここでは一律にStage分だけ逆変換すればよい。
+  const nodeToWorldPos = (node: Konva.Node) => {
+    const abs = node.getAbsolutePosition();
+    return {
+      x: (abs.x - stagePos.x) / scale,
+      y: (abs.y - stagePos.y) / scale,
+    };
+  };
+
+  // カードのドラッグ中(dragmove毎)に呼ぶ。ポインタの下に入れ子先候補のColumnがあれば
+  // そのidをdropTargetIdへ入れ、ハイライト表示する。cardIdは、そのColumn自身または
+  // 子孫Columnへドロップしてしまう(自己ネスト・循環ネスト)のを防ぐための除外対象。
+  const handleCardDragMove = (cardId: string, node: Konva.Node) => {
+    const target = findDropTargetColumn(nodeToWorldPos(node), cardId, cards);
+    setDropTargetId(target?.id ?? null);
+  };
+
+  // カードのドラッグを離した(dragend)時に呼ぶ。ポインタの下に入れ子先候補のColumnが
+  // あればそのColumnの子として再ネストし、無ければ現在位置をそのままトップレベルの
+  // x, yとして確定する（moveCardTo参照）。
+  const handleCardDragEnd = (cardId: string, node: Konva.Node) => {
+    const worldPos = nodeToWorldPos(node);
+    setCards((prev) => {
+      const target = findDropTargetColumn(worldPos, cardId, prev);
+      return moveCardTo(
+        prev,
+        cardId,
+        target ? { columnId: target.id } : { worldPos },
+      );
+    });
+    setDropTargetId(null);
   };
 
   // サイドバーのImageアイコンで選択したファイル、またはドラッグ&ドロップされた画像ファイルを
@@ -328,7 +347,8 @@ export function SpikeCanvas() {
           x: center.x - placeholder.width / 2,
           y: center.y - placeholder.height / 2,
         };
-        setCards((prev) => [...prev, newCard]);
+        // centerが既存Columnの領域内なら、トップレベルではなくそのColumnの子として追加する。
+        setCards((prev) => insertCardAtPoint(prev, newCard, center));
         setSelectedId(newCard.id);
       };
       img.src = src;
@@ -378,7 +398,8 @@ export function SpikeCanvas() {
       cardType === "note"
         ? createNoteCard(pos.x, pos.y)
         : createColumnCard(pos.x, pos.y);
-    setCards((prev) => [...prev, newCard]);
+    // ドロップ位置が既存Columnの領域内なら、トップレベルではなくそのColumnの子として追加する。
+    setCards((prev) => insertCardAtPoint(prev, newCard, pos));
     setSelectedId(newCard.id);
   };
 
@@ -476,6 +497,304 @@ export function SpikeCanvas() {
     window.addEventListener("pointerup", onUp);
   };
 
+  // カード1件分の描画。トップレベル（position省略、card自身のx, yを使う）と、
+  // Column内の子カード（positionにlayoutColumnChildrenが計算した相対位置を渡す）の
+  // 両方から呼べる共通関数にすることで、Note/Image/Swatch/Draw/Columnどの種類のカードも
+  // 「トップレベルかColumnの中か」「Columnの中なら何段ネストしているか」を問わず同じ
+  // 見た目・同じドラッグ挙動で描画できる。Columnの中でrenderCardを再帰呼び出しすることで、
+  // Column in Columnの無制限ネストに対応している。
+  const renderCard = (
+    card: Card,
+    position?: { x: number; y: number },
+  ): ReactNode => {
+    const pos = position ?? { x: card.x, y: card.y };
+
+    if (card.type === "note") {
+      return (
+        <Group
+          key={card.id}
+          x={pos.x}
+          y={pos.y}
+          draggable={!isDrawActive}
+          onClick={() => {
+            if (!isDrawActive) setSelectedId(card.id);
+          }}
+          onDblClick={() => {
+            if (!isDrawActive) setEditingId(card.id);
+          }}
+          onDragMove={(e) => handleCardDragMove(card.id, e.target)}
+          onDragEnd={(e) => handleCardDragEnd(card.id, e.target)}
+          // カードにマウスが乗ったらカーソルを変える（canvas-dom版のcursor相当）。
+          // Konvaは<canvas>1枚に描画しているためCSSのcursorプロパティを図形ごとに
+          // 指定できず、Stageのコンテナ要素のstyle.cursorを直接書き換える必要がある。
+          onMouseEnter={(e) => {
+            const container = e.target.getStage()?.container();
+            if (container) {
+              container.style.cursor = editingId === card.id ? "text" : "grab";
+            }
+          }}
+          onMouseLeave={(e) => {
+            const container = e.target.getStage()?.container();
+            if (container) container.style.cursor = "default";
+          }}
+        >
+          <Rect
+            width={NOTE_WIDTH}
+            height={card.height}
+            fill={card.color}
+            stroke={selectedId === card.id ? "#3b82f6" : undefined}
+            strokeWidth={selectedId === card.id ? 2 : 0}
+            cornerRadius={4}
+            shadowBlur={4}
+            shadowOpacity={0.2}
+          />
+          <Text
+            text={card.text}
+            width={NOTE_WIDTH}
+            height={card.height}
+            padding={NOTE_PADDING}
+            fontSize={NOTE_FONT_SIZE}
+            // Konvaのline-heightはfontSizeに対する倍率で指定するため、
+            // DOM版と見た目を揃えるためNOTE_LINE_HEIGHT(px)をfontSizeで割って渡す。
+            lineHeight={NOTE_LINE_HEIGHT / NOTE_FONT_SIZE}
+            wrap="word"
+            // 横長カード内でテキストを縦センタリングする(Konva.Textのverticalalign機能)。
+            verticalAlign="middle"
+            visible={editingId !== card.id}
+          />
+        </Group>
+      );
+    }
+
+    if (card.type === "swatch") {
+      return (
+        <Group
+          key={card.id}
+          x={pos.x}
+          y={pos.y}
+          draggable={!isDrawActive}
+          onClick={() => {
+            if (!isDrawActive) setSelectedId(card.id);
+          }}
+          onDragMove={(e) => handleCardDragMove(card.id, e.target)}
+          onDragEnd={(e) => handleCardDragEnd(card.id, e.target)}
+          onMouseEnter={(e) => {
+            const container = e.target.getStage()?.container();
+            if (container) container.style.cursor = "grab";
+          }}
+          onMouseLeave={(e) => {
+            const container = e.target.getStage()?.container();
+            if (container) container.style.cursor = "default";
+          }}
+        >
+          <Rect
+            width={card.width}
+            height={card.height}
+            fill={card.hex}
+            stroke={selectedId === card.id ? "#3b82f6" : undefined}
+            strokeWidth={selectedId === card.id ? 2 : 0}
+            cornerRadius={4}
+            shadowBlur={4}
+            shadowOpacity={0.2}
+          />
+          <Text
+            text={card.hex}
+            width={card.width}
+            height={card.height}
+            align="center"
+            verticalAlign="middle"
+            fontSize={13}
+            fill="#ffffff"
+          />
+        </Group>
+      );
+    }
+
+    if (card.type === "image") {
+      return (
+        <ImageCardView
+          key={card.id}
+          card={card}
+          position={pos}
+          isSelected={selectedId === card.id}
+          isDrawActive={isDrawActive}
+          onSelect={() => setSelectedId(card.id)}
+          onDragMove={(node) => handleCardDragMove(card.id, node)}
+          onDragEnd={(node) => handleCardDragEnd(card.id, node)}
+        />
+      );
+    }
+
+    if (card.type === "draw") {
+      return (
+        <Group
+          key={card.id}
+          x={pos.x}
+          y={pos.y}
+          draggable={!isDrawActive}
+          onClick={() => {
+            if (!isDrawActive) setSelectedId(card.id);
+          }}
+          onDragMove={(e) => handleCardDragMove(card.id, e.target)}
+          onDragEnd={(e) => handleCardDragEnd(card.id, e.target)}
+          onMouseEnter={(e) => {
+            const container = e.target.getStage()?.container();
+            if (container) container.style.cursor = "grab";
+          }}
+          onMouseLeave={(e) => {
+            const container = e.target.getStage()?.container();
+            if (container) container.style.cursor = "default";
+          }}
+        >
+          {/* 選択時のハイライト・クリック判定用の透明Rect。strokeのみのRectは
+              線の上でしかクリック判定が成立しないKonvaの仕様があるため、
+              fillを透明色にして矩形全体をヒット領域にしている。 */}
+          <Rect
+            width={card.width}
+            height={card.height}
+            fill="transparent"
+            stroke={selectedId === card.id ? "#3b82f6" : undefined}
+            strokeWidth={selectedId === card.id ? 2 : 0}
+          />
+          {card.strokes.map((stroke, i) => (
+            <Line
+              key={i}
+              points={stroke.flatMap((p) => [p.x, p.y])}
+              stroke={DRAW_STROKE_COLOR}
+              strokeWidth={DRAW_STROKE_WIDTH}
+              lineCap="round"
+              lineJoin="round"
+              listening={false}
+            />
+          ))}
+        </Group>
+      );
+    }
+
+    if (card.type === "column") {
+      const { items, addButtonY, totalHeight } = layoutColumnChildren(
+        card,
+        cards,
+      );
+      const isDropTarget = dropTargetId === card.id;
+      return (
+        <Group key={card.id} x={pos.x} y={pos.y}>
+          <Rect
+            width={COLUMN_WIDTH}
+            height={totalHeight}
+            fill="#e5e7eb"
+            cornerRadius={6}
+            // ドラッグ中のカードの入れ子先候補になっている間は、選択中の枠色とは別の色
+            // (緑)でハイライトし、「ここに入る」ことが分かるようにする。
+            stroke={
+              isDropTarget
+                ? "#22c55e"
+                : selectedId === card.id
+                  ? "#3b82f6"
+                  : undefined
+            }
+            strokeWidth={isDropTarget || selectedId === card.id ? 2 : 0}
+            shadowBlur={4}
+            shadowOpacity={0.2}
+          />
+          {/* タイトルバー。ドラッグハンドルを兼ねる。KonvaのGroup自体をdraggableに
+              すると本文中のカードや「+ Note」ボタンのクリックまでドラッグ扱いに
+              なりかねないため、このRectだけをdraggableにし、動いた分を親Groupへ
+              転写してから自身は(0,0)に戻す、という「ドラッグハンドル」パターンを使う。 */}
+          <Rect
+            draggable={!isDrawActive}
+            width={COLUMN_WIDTH}
+            height={COLUMN_TITLE_HEIGHT}
+            fill="transparent"
+            onClick={() => {
+              if (!isDrawActive) setSelectedId(card.id);
+            }}
+            onDblClick={() => {
+              if (!isDrawActive) setEditingId(card.id);
+            }}
+            onDragMove={(e) => {
+              const handle = e.target;
+              const group = handle.getParent();
+              if (group) {
+                group.position({
+                  x: group.x() + handle.x(),
+                  y: group.y() + handle.y(),
+                });
+              }
+              handle.position({ x: 0, y: 0 });
+              // ハンドルをリセットした直後は、ハンドルの絶対位置が親Groupの絶対位置と
+              // 一致するため、そのままhandleCardDragMoveに渡してよい。
+              handleCardDragMove(card.id, handle);
+            }}
+            onDragEnd={(e) => {
+              const group = e.target.getParent();
+              if (group) handleCardDragEnd(card.id, group);
+            }}
+            onMouseEnter={(e) => {
+              const container = e.target.getStage()?.container();
+              if (container) {
+                container.style.cursor =
+                  editingId === card.id ? "text" : "grab";
+              }
+            }}
+            onMouseLeave={(e) => {
+              const container = e.target.getStage()?.container();
+              if (container) container.style.cursor = "default";
+            }}
+          />
+          <Text
+            text={card.title}
+            width={COLUMN_WIDTH}
+            height={COLUMN_TITLE_HEIGHT}
+            padding={COLUMN_PADDING}
+            fontSize={14}
+            fontStyle="bold"
+            verticalAlign="middle"
+            listening={false}
+            visible={editingId !== card.id}
+          />
+          {/* 子カードの描画。子がColumnの場合はrenderCardが再帰的に自分自身を呼ぶため、
+              Column in Columnが何段ネストしていてもそのまま描画できる。 */}
+          {items.map(({ child, x, y }) => renderCard(child, { x, y }))}
+          <Rect
+            x={COLUMN_PADDING}
+            y={addButtonY}
+            width={COLUMN_WIDTH - COLUMN_PADDING * 2}
+            height={ADD_BUTTON_HEIGHT}
+            stroke="#94a3b8"
+            dash={[4, 4]}
+            cornerRadius={4}
+            onClick={() => {
+              if (!isDrawActive) handleAddNoteToColumn(card.id);
+            }}
+            onMouseEnter={(e) => {
+              const container = e.target.getStage()?.container();
+              if (container) container.style.cursor = "pointer";
+            }}
+            onMouseLeave={(e) => {
+              const container = e.target.getStage()?.container();
+              if (container) container.style.cursor = "default";
+            }}
+          />
+          <Text
+            text="+ Note"
+            x={COLUMN_PADDING}
+            y={addButtonY}
+            width={COLUMN_WIDTH - COLUMN_PADDING * 2}
+            height={ADD_BUTTON_HEIGHT}
+            align="center"
+            verticalAlign="middle"
+            fontSize={13}
+            fill="#475569"
+            listening={false}
+          />
+        </Group>
+      );
+    }
+
+    return null;
+  };
+
   return (
     // <> </> はReact Fragment。サイドバー・KonvaのStage（Canvas）と、
     // その上に重ねるHTMLの<textarea>/<input>を、余分なdivを挟まずに並べて返すために使っている。
@@ -558,346 +877,11 @@ export function SpikeCanvas() {
           }}
         >
           <Layer>
-            {/* cardsを1件ずつ描画する。Columnに属するNoteはトップレベルでは描画せず、
-                Column自身の描画の中で(layoutColumnChildrenの位置に)描画する。 */}
-            {cards.map((card) => {
-              if (columnChildIds.has(card.id)) return null;
-
-              if (card.type === "note") {
-                return (
-                  <Group
-                    key={card.id}
-                    x={card.x}
-                    y={card.y}
-                    draggable={!isDrawActive}
-                    onClick={() => {
-                      if (!isDrawActive) setSelectedId(card.id);
-                    }}
-                    onDblClick={() => {
-                      if (!isDrawActive) setEditingId(card.id);
-                    }}
-                    onDragEnd={(e) => {
-                      const { x, y } = e.target.position();
-                      setCards((prev) =>
-                        prev.map((c) =>
-                          c.id === card.id ? { ...c, x, y } : c,
-                        ),
-                      );
-                    }}
-                    // カードにマウスが乗ったらカーソルを変える（canvas-dom版のcursor相当）。
-                    // Konvaは<canvas>1枚に描画しているためCSSのcursorプロパティを図形ごとに
-                    // 指定できず、Stageのコンテナ要素のstyle.cursorを直接書き換える必要がある。
-                    onMouseEnter={(e) => {
-                      const container = e.target.getStage()?.container();
-                      if (container) {
-                        container.style.cursor =
-                          editingId === card.id ? "text" : "grab";
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      const container = e.target.getStage()?.container();
-                      if (container) container.style.cursor = "default";
-                    }}
-                  >
-                    <Rect
-                      width={NOTE_WIDTH}
-                      height={card.height}
-                      fill={card.color}
-                      stroke={selectedId === card.id ? "#3b82f6" : undefined}
-                      strokeWidth={selectedId === card.id ? 2 : 0}
-                      cornerRadius={4}
-                      shadowBlur={4}
-                      shadowOpacity={0.2}
-                    />
-                    <Text
-                      text={card.text}
-                      width={NOTE_WIDTH}
-                      height={card.height}
-                      padding={NOTE_PADDING}
-                      fontSize={NOTE_FONT_SIZE}
-                      // Konvaのline-heightはfontSizeに対する倍率で指定するため、
-                      // DOM版と見た目を揃えるためNOTE_LINE_HEIGHT(px)をfontSizeで割って渡す。
-                      lineHeight={NOTE_LINE_HEIGHT / NOTE_FONT_SIZE}
-                      wrap="word"
-                      // 横長カード内でテキストを縦センタリングする(Konva.Textのverticalalign機能)。
-                      verticalAlign="middle"
-                      visible={editingId !== card.id}
-                    />
-                  </Group>
-                );
-              }
-
-              if (card.type === "swatch") {
-                return (
-                  <Group
-                    key={card.id}
-                    x={card.x}
-                    y={card.y}
-                    draggable={!isDrawActive}
-                    onClick={() => {
-                      if (!isDrawActive) setSelectedId(card.id);
-                    }}
-                    onDragEnd={(e) => {
-                      const { x, y } = e.target.position();
-                      setCards((prev) =>
-                        prev.map((c) =>
-                          c.id === card.id ? { ...c, x, y } : c,
-                        ),
-                      );
-                    }}
-                    onMouseEnter={(e) => {
-                      const container = e.target.getStage()?.container();
-                      if (container) container.style.cursor = "grab";
-                    }}
-                    onMouseLeave={(e) => {
-                      const container = e.target.getStage()?.container();
-                      if (container) container.style.cursor = "default";
-                    }}
-                  >
-                    <Rect
-                      width={card.width}
-                      height={card.height}
-                      fill={card.hex}
-                      stroke={selectedId === card.id ? "#3b82f6" : undefined}
-                      strokeWidth={selectedId === card.id ? 2 : 0}
-                      cornerRadius={4}
-                      shadowBlur={4}
-                      shadowOpacity={0.2}
-                    />
-                    <Text
-                      text={card.hex}
-                      width={card.width}
-                      height={card.height}
-                      align="center"
-                      verticalAlign="middle"
-                      fontSize={13}
-                      fill="#ffffff"
-                    />
-                  </Group>
-                );
-              }
-
-              if (card.type === "image") {
-                return (
-                  <ImageCardView
-                    key={card.id}
-                    card={card}
-                    isSelected={selectedId === card.id}
-                    isDrawActive={isDrawActive}
-                    onSelect={() => setSelectedId(card.id)}
-                    onDragEnd={(x, y) => {
-                      setCards((prev) =>
-                        prev.map((c) =>
-                          c.id === card.id ? { ...c, x, y } : c,
-                        ),
-                      );
-                    }}
-                  />
-                );
-              }
-
-              if (card.type === "column") {
-                const { items, addButtonY, totalHeight } = layoutColumnChildren(
-                  card,
-                  cards,
-                );
-                return (
-                  <Group key={card.id} x={card.x} y={card.y}>
-                    <Rect
-                      width={COLUMN_WIDTH}
-                      height={totalHeight}
-                      fill="#e5e7eb"
-                      cornerRadius={6}
-                      stroke={selectedId === card.id ? "#3b82f6" : undefined}
-                      strokeWidth={selectedId === card.id ? 2 : 0}
-                      shadowBlur={4}
-                      shadowOpacity={0.2}
-                    />
-                    {/* タイトルバー。ドラッグハンドルを兼ねる。KonvaのGroup自体をdraggableに
-                        すると本文中のNoteや「+ Note」ボタンのクリックまでドラッグ扱いに
-                        なりかねないため、このRectだけをdraggableにし、動いた分を親Groupへ
-                        転写してから自身は(0,0)に戻す、という「ドラッグハンドル」パターンを使う。 */}
-                    <Rect
-                      draggable={!isDrawActive}
-                      width={COLUMN_WIDTH}
-                      height={COLUMN_TITLE_HEIGHT}
-                      fill="transparent"
-                      onClick={() => {
-                        if (!isDrawActive) setSelectedId(card.id);
-                      }}
-                      onDblClick={() => {
-                        if (!isDrawActive) setEditingId(card.id);
-                      }}
-                      onDragMove={(e) => {
-                        const handle = e.target;
-                        const group = handle.getParent();
-                        if (group) {
-                          group.position({
-                            x: group.x() + handle.x(),
-                            y: group.y() + handle.y(),
-                          });
-                        }
-                        handle.position({ x: 0, y: 0 });
-                      }}
-                      onDragEnd={(e) => {
-                        const group = e.target.getParent();
-                        if (!group) return;
-                        setCards((prev) =>
-                          prev.map((c) =>
-                            c.id === card.id
-                              ? { ...c, x: group.x(), y: group.y() }
-                              : c,
-                          ),
-                        );
-                      }}
-                      onMouseEnter={(e) => {
-                        const container = e.target.getStage()?.container();
-                        if (container) {
-                          container.style.cursor =
-                            editingId === card.id ? "text" : "grab";
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        const container = e.target.getStage()?.container();
-                        if (container) container.style.cursor = "default";
-                      }}
-                    />
-                    <Text
-                      text={card.title}
-                      width={COLUMN_WIDTH}
-                      height={COLUMN_TITLE_HEIGHT}
-                      padding={COLUMN_PADDING}
-                      fontSize={14}
-                      fontStyle="bold"
-                      verticalAlign="middle"
-                      listening={false}
-                      visible={editingId !== card.id}
-                    />
-                    {items.map(({ note, x, y }) => (
-                      <Group
-                        key={note.id}
-                        x={x}
-                        y={y}
-                        onClick={() => {
-                          if (!isDrawActive) setSelectedId(note.id);
-                        }}
-                        onDblClick={() => {
-                          if (!isDrawActive) setEditingId(note.id);
-                        }}
-                      >
-                        <Rect
-                          width={NOTE_WIDTH}
-                          height={note.height}
-                          fill={note.color}
-                          stroke={
-                            selectedId === note.id ? "#3b82f6" : undefined
-                          }
-                          strokeWidth={selectedId === note.id ? 2 : 0}
-                          cornerRadius={4}
-                        />
-                        <Text
-                          text={note.text}
-                          width={NOTE_WIDTH}
-                          height={note.height}
-                          padding={NOTE_PADDING}
-                          fontSize={NOTE_FONT_SIZE}
-                          lineHeight={NOTE_LINE_HEIGHT / NOTE_FONT_SIZE}
-                          wrap="word"
-                          verticalAlign="middle"
-                          visible={editingId !== note.id}
-                        />
-                      </Group>
-                    ))}
-                    <Rect
-                      x={COLUMN_PADDING}
-                      y={addButtonY}
-                      width={COLUMN_WIDTH - COLUMN_PADDING * 2}
-                      height={ADD_BUTTON_HEIGHT}
-                      stroke="#94a3b8"
-                      dash={[4, 4]}
-                      cornerRadius={4}
-                      onClick={() => {
-                        if (!isDrawActive) handleAddNoteToColumn(card.id);
-                      }}
-                      onMouseEnter={(e) => {
-                        const container = e.target.getStage()?.container();
-                        if (container) container.style.cursor = "pointer";
-                      }}
-                      onMouseLeave={(e) => {
-                        const container = e.target.getStage()?.container();
-                        if (container) container.style.cursor = "default";
-                      }}
-                    />
-                    <Text
-                      text="+ Note"
-                      x={COLUMN_PADDING}
-                      y={addButtonY}
-                      width={COLUMN_WIDTH - COLUMN_PADDING * 2}
-                      height={ADD_BUTTON_HEIGHT}
-                      align="center"
-                      verticalAlign="middle"
-                      fontSize={13}
-                      fill="#475569"
-                      listening={false}
-                    />
-                  </Group>
-                );
-              }
-
-              if (card.type === "draw") {
-                return (
-                  <Group
-                    key={card.id}
-                    x={card.x}
-                    y={card.y}
-                    draggable={!isDrawActive}
-                    onClick={() => {
-                      if (!isDrawActive) setSelectedId(card.id);
-                    }}
-                    onDragEnd={(e) => {
-                      const { x, y } = e.target.position();
-                      setCards((prev) =>
-                        prev.map((c) =>
-                          c.id === card.id ? { ...c, x, y } : c,
-                        ),
-                      );
-                    }}
-                    onMouseEnter={(e) => {
-                      const container = e.target.getStage()?.container();
-                      if (container) container.style.cursor = "grab";
-                    }}
-                    onMouseLeave={(e) => {
-                      const container = e.target.getStage()?.container();
-                      if (container) container.style.cursor = "default";
-                    }}
-                  >
-                    {/* 選択時のハイライト・クリック判定用の透明Rect。strokeのみのRectは
-                        線の上でしかクリック判定が成立しないKonvaの仕様があるため、
-                        fillを透明色にして矩形全体をヒット領域にしている。 */}
-                    <Rect
-                      width={card.width}
-                      height={card.height}
-                      fill="transparent"
-                      stroke={selectedId === card.id ? "#3b82f6" : undefined}
-                      strokeWidth={selectedId === card.id ? 2 : 0}
-                    />
-                    {card.strokes.map((stroke, i) => (
-                      <Line
-                        key={i}
-                        points={stroke.flatMap((p) => [p.x, p.y])}
-                        stroke={DRAW_STROKE_COLOR}
-                        strokeWidth={DRAW_STROKE_WIDTH}
-                        lineCap="round"
-                        lineJoin="round"
-                        listening={false}
-                      />
-                    ))}
-                  </Group>
-                );
-              }
-
-              return null;
-            })}
+            {/* cardsを1件ずつ描画する。Columnに属するカードはトップレベルでは描画せず、
+                Column自身の描画の中(renderCardの再帰呼び出し)で描画する。 */}
+            {cards.map((card) =>
+              columnChildIds.has(card.id) ? null : renderCard(card),
+            )}
 
             {/* ペンモード中、描き途中のストロークをライブプレビューするための要素。
                 cards.mapより後ろに置くことで、既存カードの上に重なって見えるようにしている。 */}
