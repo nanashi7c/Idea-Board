@@ -7,7 +7,11 @@ node_modules/
 .env.*.local
 
 # Claude Code（ローカル設定）
-.claude/
+.claude/*
+!.claude/CLAUDE.md
+
+# 共通原本から生成する agent skills
+.agents/skills/
 
 # ローカル生成物・作業用
 docs/tmp/
