@@ -4,6 +4,9 @@
   "_comment_script": "Notionの設計ドキュメントのローカルへの同期",
   "scripts": {
     "docs:sync": "node scripts/tmp/sync-notion-docs.mjs",
+    "skills:sync": "node scripts/sync-agent-skills.mjs",
+    "skills:sync:dry-run": "node scripts/sync-agent-skills.mjs --dry-run",
+    "skills:check": "node scripts/sync-agent-skills.mjs --check",
     "dev": "pnpm -r --parallel run dev",
     "build": "pnpm -r run build"
   },
