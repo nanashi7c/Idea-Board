@@ -1,6 +1,9 @@
 # dependencies
 node_modules/
+.pnpm-store/
 
+# build outputs
+**/dist/
 
 # env / secrets
 .env
