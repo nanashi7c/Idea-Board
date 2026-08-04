@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "node esbuild.config.mjs",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit",
     "migrate:up": "node-pg-migrate up",
     "migrate:create": "node-pg-migrate create"
   },
