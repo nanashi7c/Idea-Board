@@ -56,14 +56,13 @@ export function CanvasStage() {
     event.target.getStage()?.startDrag();
   };
 
-  // ドラッグされた要素から祖先方向へ一度伝わるのみであるため、Stageの子孫でcancelBubbleをtrueにしなかった場合、onDragEndが無駄に親に伝搬するが、仕様上Stageの子孫コンポーネント階層はあまり深くならないため、オーバーヘッドが発生しても許容する。
-  // "Events bubble from shapes through groups and layers, just like the DOM." by https://konvajs.org/docs/index.html
+  // 子要素のdragendもStageへ伝わるため、Stage自身のドラッグ終了だけを処理する。
   const handlePanEnd = (event: Konva.KonvaEventObject<MouseEvent>) => {
-    const stage = event.target.getStage();
-    // そもそもevent.targetがどのStageにも属していない場合、子要素のイベントが親のStageまで伝わってきた場合に、event.targetがStageではなくなるため無視する。
-    if (!stage || event.target !== stage) {
+    if (event.target !== event.currentTarget) {
       return;
     }
+
+    const stage = event.currentTarget;
 
     setViewport((prev) => ({
       ...prev,
