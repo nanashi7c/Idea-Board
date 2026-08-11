@@ -53,7 +53,7 @@ export function CanvasStage() {
     }
 
     event.evt.preventDefault();
-    event.target.getStage()?.startDrag();
+    event.currentTarget.startDrag();
   };
 
   // 子要素のdragendもStageへ伝わるため、Stage自身のドラッグ終了だけを処理する。
