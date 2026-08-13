@@ -42,6 +42,31 @@ test("ホイール操作でキャンバスをズームする", async ({ page }) 
     .not.toEqual(beforeZoom);
 });
 
+test("中ボタンドラッグでキャンバスを移動する", async ({ page }) => {
+  const canvas = page
+    .getByRole("region", {
+      name: "アイデアボードのキャンバス",
+    })
+    .locator("canvas")
+    .first();
+
+  await expect(canvas).toBeVisible();
+  await expect.poll(() => getShortestSide(canvas)).toBeGreaterThan(1);
+  const center = await getCanvasCenter(canvas);
+  const beforePan = await canvas.screenshot();
+
+  await page.mouse.move(center.x, center.y);
+  await page.mouse.down({ button: "middle" });
+  await page.mouse.move(center.x + 80, center.y + 40, { steps: 5 });
+  await page.mouse.up({ button: "middle" });
+
+  await expect
+    .poll(async () => canvas.screenshot(), {
+      message: "中ボタンドラッグ後にキャンバスの描画が変化する",
+    })
+    .not.toEqual(beforePan);
+});
+
 async function getShortestSide(canvas: Locator): Promise<number> {
   const bounds = await canvas.boundingBox();
 
