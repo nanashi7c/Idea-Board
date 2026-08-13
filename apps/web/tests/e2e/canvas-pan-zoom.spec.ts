@@ -42,6 +42,31 @@ test("中ボタンドラッグでキャンバスを移動する", async ({ page 
     .not.toEqual(beforePan);
 });
 
+for (const { button, buttonName } of [
+  { button: "left", buttonName: "左ボタン" },
+  { button: "right", buttonName: "右ボタン" },
+] as const) {
+  test(`キャンバスの空白を${buttonName}でドラッグしてもパンしない`, async ({
+    page,
+  }) => {
+    const canvas = await getReadyCanvas(page);
+
+    const center = await getCanvasCenter(canvas);
+    const beforeDrag = await canvas.screenshot();
+
+    await page.mouse.move(center.x, center.y);
+    await page.mouse.down({ button });
+    await page.mouse.move(center.x + 80, center.y + 40, { steps: 5 });
+    await page.mouse.up({ button });
+
+    await expect
+      .poll(async () => canvas.screenshot(), {
+        message: `${buttonName}ドラッグ後にキャンバスの描画が変化しない`,
+      })
+      .toEqual(beforeDrag);
+  });
+}
+
 async function getReadyCanvas(page: Page): Promise<Locator> {
   const canvasRegion = page.getByRole("region", {
     name: "アイデアボードのキャンバス",
