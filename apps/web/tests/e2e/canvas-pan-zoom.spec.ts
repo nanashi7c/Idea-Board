@@ -1,33 +1,15 @@
-import test, { expect, Locator } from "@playwright/test";
+import test, { expect, Locator, Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/board");
 });
 
 test("キャンバスを表示する", async ({ page }) => {
-  const canvasRegion = page.getByRole("region", {
-    name: "アイデアボードのキャンバス",
-  });
-
-  await expect(canvasRegion).toBeVisible();
-
-  const canvas = canvasRegion.locator("canvas").first();
-
-  await expect(canvas).toBeVisible();
-
-  await expect.poll(() => getShortestSide(canvas)).toBeGreaterThan(1);
+  await getReadyCanvas(page);
 });
 
 test("ホイール操作でキャンバスをズームする", async ({ page }) => {
-  const canvas = page
-    .getByRole("region", {
-      name: "アイデアボードのキャンバス",
-    })
-    .locator("canvas")
-    .first();
-
-  await expect(canvas).toBeVisible();
-  await expect.poll(() => getShortestSide(canvas)).toBeGreaterThan(1);
+  const canvas = await getReadyCanvas(page);
 
   const center = await getCanvasCenter(canvas);
   const beforeZoom = await canvas.screenshot();
@@ -43,15 +25,8 @@ test("ホイール操作でキャンバスをズームする", async ({ page }) 
 });
 
 test("中ボタンドラッグでキャンバスを移動する", async ({ page }) => {
-  const canvas = page
-    .getByRole("region", {
-      name: "アイデアボードのキャンバス",
-    })
-    .locator("canvas")
-    .first();
+  const canvas = await getReadyCanvas(page);
 
-  await expect(canvas).toBeVisible();
-  await expect.poll(() => getShortestSide(canvas)).toBeGreaterThan(1);
   const center = await getCanvasCenter(canvas);
   const beforePan = await canvas.screenshot();
 
@@ -66,6 +41,22 @@ test("中ボタンドラッグでキャンバスを移動する", async ({ page 
     })
     .not.toEqual(beforePan);
 });
+
+async function getReadyCanvas(page: Page): Promise<Locator> {
+  const canvasRegion = page.getByRole("region", {
+    name: "アイデアボードのキャンバス",
+  });
+
+  await expect(canvasRegion).toBeVisible();
+
+  const canvas = canvasRegion.locator("canvas").first();
+
+  await expect(canvas).toBeVisible();
+
+  await expect.poll(() => getShortestSide(canvas)).toBeGreaterThan(1);
+
+  return canvas;
+}
 
 async function getShortestSide(canvas: Locator): Promise<number> {
   const bounds = await canvas.boundingBox();
