@@ -1,4 +1,0 @@
-interface:
-  display_name: "Nanashi Operation Policy"
-  short_description: "副作用を伴う操作の許可判断と応答言語を定める基本方針"
-  default_prompt: "Use $nanashi-operation-policy to determine how this task may be performed."

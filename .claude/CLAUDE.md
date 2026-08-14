@@ -32,3 +32,12 @@ KPI やカバレッジ目標が与えられたら、達成するまで試行す�
 - `gh pr edit` や `gh issue edit` は直接実行しません。prompt なしで自分が作成した PR / Issue を編集する場合は、`~/.codex/bin/safe-gh-edit <pr|issue> <number> [gh edit flags...]` を使います。
 - `~/.codex/bin/safe-gh-edit` が拒否した場合やコマンドが見つからない場合は、拒否理由を確認してからユーザーに方針を確認します。
 - curl は localhost / loopback / Docker network 内の private address 宛てなら prompt なしで実行可能
+
+---
+
+# Operation Policy
+
+- 特に指示がない限り、日本語で応答する。
+- 副作用のある操作は原則としてユーザーが行う。ファイルの編集、新規作成、削除、上書き、外部送信、状態変更を伴うコマンドについては、コマンド案、差分案、ファイル内容案の提示に留める。
+- 読み取り専用の検索、閲覧、型チェックなどは、確認なしで実行してよい。
+- AIエージェントが副作用のある操作を実行するのは、ユーザーが明示的に指示または許可した場合だけにする。

@@ -19,3 +19,10 @@ description: Gitリポジトリでcommit、commit message、ブランチ名、PR
 - 実装と設計ドキュメントの対応は、設計ドキュメント側からPRまたはcommitへリンクする一方向の運用にする。
 - commit messageを考える前に、現在のブランチ名が変更の主目的に合っているか確認する。
 - ブランチ名が適切でない場合はcommitせず、理由と適切な新しいブランチ名を提案する。
+
+## 責務境界
+
+- このSkillは、プロジェクト固有のGit規約の解決と優先順位付けだけを担当する。
+- commit、commit messageの作成は`$cmd-commit`へ委譲する。
+- このSkill単独では、stage、commit、branch作成、push、PR作成を実行しない。
+- 委譲先の汎用ルールとプロジェクト固有規約が競合する場合は、このSkillが特定したプロジェクト固有規約を優先する。
