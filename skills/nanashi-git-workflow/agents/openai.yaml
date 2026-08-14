@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nanashi Git Workflow"
+  short_description: "ブランチ・commit・PRを一貫して扱うためのGit運用ルール"
+  default_prompt: "Use $nanashi-git-workflow to prepare this commit or pull request."

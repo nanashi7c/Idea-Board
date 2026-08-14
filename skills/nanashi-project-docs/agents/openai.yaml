@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nanashi Project Docs"
+  short_description: "プロジェクトの一次資料と同期・生成文書を安全に扱う参照ルール"
+  default_prompt: "Use $nanashi-project-docs to inspect this project's primary design documents."

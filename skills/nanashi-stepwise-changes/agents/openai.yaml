@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nanashi Stepwise Changes"
+  short_description: "コード変更を小さな段階に分けて提示するための説明ルール"
+  default_prompt: "Use $nanashi-stepwise-changes to present this change incrementally."
