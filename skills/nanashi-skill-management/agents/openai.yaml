@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nanashi Skill Management"
+  short_description: "Skillの原本・生成物・同期・検証を安全に扱う管理ワークフロー"
+  default_prompt: "Use $nanashi-skill-management to update and synchronize project skills."
